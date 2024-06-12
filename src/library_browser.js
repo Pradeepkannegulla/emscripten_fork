@@ -507,10 +507,11 @@ var LibraryBrowser = {
 
     // abort and pause-aware versions TODO: build main loop on top of this?
 
-    safeSetTimeout: function(func) {
+    safeSetTimeout: function(func, timeout) {
       // Legacy function, this is used by the SDL2 port so we need to keep it
       // around at least until that is updated.
-      return safeSetTimeout(func);
+      // See https://github.com/libsdl-org/SDL/pull/6304
+      return safeSetTimeout(func, timeout);
     },
     safeRequestAnimationFrame: function(func) {
       {{{ runtimeKeepalivePush() }}}
@@ -952,7 +953,7 @@ var LibraryBrowser = {
 #if OFFSCREEN_FRAMEBUFFER
     'emscripten_webgl_commit_frame',
 #endif
-#if !MINIMAL_RUNTIME
+#if EXIT_RUNTIME && !MINIMAL_RUNTIME
     '$maybeExit',
 #endif
   ],
@@ -984,10 +985,10 @@ var LibraryBrowser = {
     function checkIsRunning() {
       if (thisMainLoopId < Browser.mainLoop.currentlyRunningMainloop) {
 #if RUNTIME_DEBUG
-        err('main loop exiting..');
+        dbg('main loop exiting..');
 #endif
         {{{ runtimeKeepalivePop() }}}
-#if !MINIMAL_RUNTIME
+#if EXIT_RUNTIME && !MINIMAL_RUNTIME
         maybeExit();
 #endif
         return false;
@@ -1378,11 +1379,11 @@ var LibraryBrowser = {
     return 0;
   },
 
-  emscripten_get_preloaded_image_data_from_FILE__deps: ['emscripten_get_preloaded_image_data'],
+  emscripten_get_preloaded_image_data_from_FILE__deps: ['emscripten_get_preloaded_image_data', 'fileno'],
   emscripten_get_preloaded_image_data_from_FILE__proxy: 'sync',
   emscripten_get_preloaded_image_data_from_FILE__sig: 'iiii',
   emscripten_get_preloaded_image_data_from_FILE: function(file, w, h) {
-    var fd = Module['_fileno'](file);
+    var fd = _fileno(file);
     var stream = FS.getStream(fd);
     if (stream) {
       return _emscripten_get_preloaded_image_data(stream.path, w, h);

@@ -15,7 +15,7 @@ mergeInto(LibraryManager.library, {
   },
 
   // C calling interface.
-  $ccall__deps: ['$getCFunc'],
+  $ccall__deps: ['$getCFunc', '$writeArrayToMemory'],
   $ccall__docs: `
   /**
    * @param {string|null=} returnType
@@ -75,19 +75,19 @@ mergeInto(LibraryManager.library, {
         }
       }
     }
-#if ASYNCIFY
+#if ASYNCIFY == 1
     // Data for a previous async operation that was in flight before us.
     var previousAsync = Asyncify.currData;
 #endif
     var ret = func.apply(null, cArgs);
     function onDone(ret) {
-#if ASYNCIFY
+#if ASYNCIFY == 1
       runtimeKeepalivePop();
 #endif
       if (stack !== 0) stackRestore(stack);
       return convertReturnValue(ret);
     }
-#if ASYNCIFY
+#if ASYNCIFY == 1
     // Keep the runtime alive through all calls. Note that this call might not be
     // async, but for simplicity we push and pop in all calls.
     runtimeKeepalivePush();
@@ -114,7 +114,7 @@ mergeInto(LibraryManager.library, {
 #endif
 
     ret = onDone(ret);
-#if ASYNCIFY
+#if ASYNCIFY == 1
     // If this is an async ccall, ensure we return a promise
     if (asyncMode) return Promise.resolve(ret);
 #endif
@@ -130,10 +130,9 @@ mergeInto(LibraryManager.library, {
   $cwrap__deps: ['$getCFunc', '$ccall'],
   $cwrap: function(ident, returnType, argTypes, opts) {
 #if !ASSERTIONS
-    argTypes = argTypes || [];
     // When the function takes numbers and returns a number, we can just return
     // the original function
-    var numericArgs = argTypes.every((type) => type === 'number' || type === 'boolean');
+    var numericArgs = !argTypes || argTypes.every((type) => type === 'number' || type === 'boolean');
     var numericRet = returnType !== 'string';
     if (numericRet && numericArgs && !opts) {
       return getCFunc(ident);

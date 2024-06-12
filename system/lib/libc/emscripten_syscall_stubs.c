@@ -60,7 +60,7 @@ int __syscall_uname(intptr_t buf) {
   strcpy(utsname->nodename, "emscripten");
   strcpy(utsname->release, full_version);
   strcpy(utsname->version, "#1");
-#ifdef __wams64__
+#ifdef __wasm64__
   strcpy(utsname->machine, "wasm64");
 #else
   strcpy(utsname->machine, "wasm32");
@@ -254,8 +254,6 @@ UNIMPLEMENTED(pipe2, (intptr_t fds, int flags))
 UNIMPLEMENTED(pselect6, (int nfds, intptr_t readfds, intptr_t writefds, intptr_t exceptfds, intptr_t timeout, intptr_t sigmaks))
 UNIMPLEMENTED(recvmmsg, (int sockfd, intptr_t msgvec, size_t vlen, int flags, ...))
 UNIMPLEMENTED(sendmmsg, (int sockfd, intptr_t msgvec, size_t vlen, int flags, ...))
-UNIMPLEMENTED(setitimer, (int which, intptr_t new_value, intptr_t old_value))
-UNIMPLEMENTED(getitimer, (int which, intptr_t old_value))
 UNIMPLEMENTED(shutdown, (int sockfd, int how, int dummy, int dummy2, int dummy3, int dummy4))
 UNIMPLEMENTED(socketpair, (int domain, int type, int protocol, intptr_t fds, int dummy, int dummy2))
 UNIMPLEMENTED(wait4,(int pid, intptr_t wstatus, int options, int rusage))

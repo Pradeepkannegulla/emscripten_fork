@@ -41,6 +41,8 @@ uptr GetMmapGranularity() {
   return GetPageSize();
 }
 
+bool ErrorIsOOM(error_t err) { return err == ENOMEM; }
+
 void *MmapOrDie(uptr size, const char *mem_type, bool raw_report) {
   size = RoundUpTo(size, GetPageSizeCached());
   uptr res = MmapNamed(nullptr, size, PROT_READ | PROT_WRITE,
@@ -88,7 +90,9 @@ void *MmapAlignedOrDieOnFatalError(uptr size, uptr alignment,
   uptr map_res = (uptr)MmapOrDieOnFatalError(map_size, mem_type);
   if (UNLIKELY(!map_res))
     return nullptr;
+#ifndef SANITIZER_EMSCRIPTEN
   uptr map_end = map_res + map_size;
+#endif
   uptr res = map_res;
   if (!IsAligned(res, alignment)) {
     res = (map_res + alignment - 1) & ~(alignment - 1);
@@ -100,6 +104,7 @@ void *MmapAlignedOrDieOnFatalError(uptr size, uptr alignment,
 #ifndef SANITIZER_EMSCRIPTEN
   // Emscripten's fake mmap doesn't support partial unmapping
   uptr end = res + size;
+  end = RoundUpTo(end, GetPageSizeCached());
   if (end != map_end)
     UnmapOrDie((void*)end, map_end - end);
 #endif
@@ -160,7 +165,7 @@ bool MprotectReadOnly(uptr addr, uptr size) {
 #endif
 }
 
-#if !SANITIZER_MAC
+#if !SANITIZER_APPLE
 void MprotectMallocZones(void *addr, int prot) {}
 #endif
 
@@ -227,13 +232,6 @@ void *MapWritableFileToMemory(void *addr, uptr size, fd_t fd, OFF_T offset) {
   return (void *)p;
 }
 
-static inline bool IntervalsAreSeparate(uptr start1, uptr end1,
-                                        uptr start2, uptr end2) {
-  CHECK(start1 <= end1);
-  CHECK(start2 <= end2);
-  return (end1 < start2) || (end2 < start1);
-}
-
 #if SANITIZER_EMSCRIPTEN
 bool MemoryRangeIsAvailable(uptr /*range_start*/, uptr /*range_end*/) {
   // TODO: actually implement this.
@@ -244,6 +242,13 @@ void DumpProcessMap() {
   Report("Cannot dump memory map on emscripten");
 }
 #else
+static inline bool IntervalsAreSeparate(uptr start1, uptr end1,
+                                        uptr start2, uptr end2) {
+  CHECK(start1 <= end1);
+  CHECK(start2 <= end2);
+  return (end1 < start2) || (end2 < start1);
+}
+
 // FIXME: this is thread-unsafe, but should not cause problems most of the time.
 // When the shadow is mapped only a single thread usually exists (plus maybe
 // several worker threads on Mac, which aren't expected to map big chunks of
@@ -263,7 +268,7 @@ bool MemoryRangeIsAvailable(uptr range_start, uptr range_end) {
   return true;
 }
 
-#if !SANITIZER_MAC
+#if !SANITIZER_APPLE
 void DumpProcessMap() {
   MemoryMappingLayout proc_maps(/*cache_enabled*/true);
   const sptr kBufSize = 4095;

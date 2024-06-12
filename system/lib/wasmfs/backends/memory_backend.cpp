@@ -13,7 +13,7 @@
 
 namespace wasmfs {
 
-ssize_t MemoryFile::write(const uint8_t* buf, size_t len, off_t offset) {
+ssize_t MemoryDataFile::write(const uint8_t* buf, size_t len, off_t offset) {
   if (offset + len > buffer.size()) {
     buffer.resize(offset + len);
   }
@@ -21,7 +21,7 @@ ssize_t MemoryFile::write(const uint8_t* buf, size_t len, off_t offset) {
   return len;
 }
 
-ssize_t MemoryFile::read(uint8_t* buf, size_t len, off_t offset) {
+ssize_t MemoryDataFile::read(uint8_t* buf, size_t len, off_t offset) {
   if (offset >= buffer.size()) {
     len = 0;
   } else if (offset + len >= buffer.size()) {
@@ -38,25 +38,33 @@ MemoryDirectory::findEntry(const std::string& name) {
   });
 }
 
-bool MemoryDirectory::removeChild(const std::string& name) {
-  auto entry = findEntry(name);
-  if (entry != entries.end()) {
-    entries.erase(entry);
+std::shared_ptr<File> MemoryDirectory::getChild(const std::string& name) {
+  if (auto entry = findEntry(name); entry != entries.end()) {
+    return entry->child;
   }
-  return true;
+  return nullptr;
 }
 
-std::vector<Directory::Entry> MemoryDirectory::getEntries() {
+int MemoryDirectory::removeChild(const std::string& name) {
+  auto entry = findEntry(name);
+  if (entry != entries.end()) {
+    entry->child->locked().setParent(nullptr);
+    entries.erase(entry);
+  }
+  return 0;
+}
+
+Directory::MaybeEntries MemoryDirectory::getEntries() {
   std::vector<Directory::Entry> result;
   result.reserve(entries.size());
   for (auto& [name, child] : entries) {
     result.push_back({name, child->kind, child->getIno()});
   }
-  return result;
+  return {result};
 }
 
-bool MemoryDirectory::insertMove(const std::string& name,
-                                 std::shared_ptr<File> file) {
+int MemoryDirectory::insertMove(const std::string& name,
+                                std::shared_ptr<File> file) {
   auto& oldEntries =
     std::static_pointer_cast<MemoryDirectory>(file->locked().getParent())
       ->entries;
@@ -66,15 +74,26 @@ bool MemoryDirectory::insertMove(const std::string& name,
       break;
     }
   }
-  removeChild(name);
+  (void)removeChild(name);
   insertChild(name, file);
-  return true;
+  return 0;
 }
 
-class MemoryFileBackend : public Backend {
+std::string MemoryDirectory::getName(std::shared_ptr<File> file) {
+  auto it =
+    std::find_if(entries.begin(), entries.end(), [&](const auto& entry) {
+      return entry.child == file;
+    });
+  if (it != entries.end()) {
+    return it->name;
+  }
+  return "";
+}
+
+class MemoryBackend : public Backend {
 public:
   std::shared_ptr<DataFile> createFile(mode_t mode) override {
-    return std::make_shared<MemoryFile>(mode, this);
+    return std::make_shared<MemoryDataFile>(mode, this);
   }
   std::shared_ptr<Directory> createDirectory(mode_t mode) override {
     return std::make_shared<MemoryDirectory>(mode, this);
@@ -84,8 +103,14 @@ public:
   }
 };
 
-backend_t createMemoryFileBackend() {
-  return wasmFS.addBackend(std::make_unique<MemoryFileBackend>());
+backend_t createMemoryBackend() {
+  return wasmFS.addBackend(std::make_unique<MemoryBackend>());
 }
+
+extern "C" {
+
+backend_t wasmfs_create_memory_backend() { return createMemoryBackend(); }
+
+} // extern "C"
 
 } // namespace wasmfs

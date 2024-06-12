@@ -5,8 +5,10 @@
  * found in the LICENSE file.
  */
 
+#define _GNU_SOURCE
 #include <assert.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -17,6 +19,7 @@
 
 #include <emscripten.h>
 #include <emscripten/heap.h>
+#include <emscripten/console.h>
 #include <wasi/api.h>
 #include <wasi/wasi-helpers.h>
 
@@ -66,8 +69,13 @@ int clock_getres(clockid_t clk_id, struct timespec *tp) {
 
 // Mark these as weak so that wasmfs does not collide with it. That is, if
 // wasmfs is in use, we want to use that and not this.
-__attribute__((__weak__)) intptr_t _mmap_js(
-  size_t length, int prot, int flags, int fd, size_t offset, int* allocated) {
+__attribute__((__weak__)) int _mmap_js(size_t length,
+                                       int prot,
+                                       int flags,
+                                       int fd,
+                                       size_t offset,
+                                       int* allocated,
+                                       void** addr) {
   return -ENOSYS;
 }
 
@@ -180,7 +188,7 @@ int _wasmfs_get_preloaded_file_size(int index) { return 0; }
 
 int _wasmfs_get_preloaded_file_mode(int index) { return 0; }
 
-size_t _wasmfs_copy_preloaded_file_data(int index, void* buffer) { return 0; }
+void _wasmfs_copy_preloaded_file_data(int index, void* buffer) {}
 
 void _wasmfs_get_preloaded_parent_path(int index, void* buffer) {}
 
@@ -201,7 +209,7 @@ imported__wasi_fd_write(__wasi_fd_t fd,
                         __wasi_size_t* nwritten);
 
 // Write a buffer + a newline.
-static void wasi_writeln(__wasi_fd_t fd, char* buffer) {
+static void wasi_writeln(__wasi_fd_t fd, const char* buffer) {
   struct __wasi_ciovec_t iovs[2];
   iovs[0].buf = (uint8_t*)buffer;
   iovs[0].buf_len = strlen(buffer);
@@ -211,6 +219,13 @@ static void wasi_writeln(__wasi_fd_t fd, char* buffer) {
   imported__wasi_fd_write(fd, iovs, 2, &nwritten);
 }
 
-void _emscripten_out(char* text) { wasi_writeln(1, text); }
+void _emscripten_out(const char* text) { wasi_writeln(1, text); }
 
-void _emscripten_err(char* text) { wasi_writeln(2, text); }
+void _emscripten_err(const char* text) { wasi_writeln(2, text); }
+
+// In the non-standalone build we define this helper function in JS to avoid
+// signture mismatch issues.
+// See: https://github.com/emscripten-core/posixtestsuite/issues/6
+void __call_sighandler(sighandler_t handler, int sig) {
+  handler(sig);
+}

@@ -1,9 +1,11 @@
 #include <stdbool.h>
 #include <sched.h>
 #include <threads.h>
-#include "syscall.h"
 
 #include <emscripten/threading.h>
+
+#include "syscall.h"
+#include "threading_internal.h"
 
 static _Atomic bool thread_crashed = false;
 
@@ -11,18 +13,13 @@ void _emscripten_thread_crashed() {
   thread_crashed = true;
 }
 
-static void dummy()
+static void dummy(double now)
 {
 }
 
-weak_alias(dummy, _emscripten_thread_sync_code);
+weak_alias(dummy, _emscripten_check_timers);
 
-/*
- * Called whenever a thread performs a blocking action (or calls sched_yield).
- * This function takes care of running the event queue and other housekeeping
- * tasks.
- */
-void _emscripten_yield() {
+void _emscripten_yield(double now) {
   int is_runtime_thread = emscripten_is_main_runtime_thread();
 
   // When a secondary thread crashes, we need to be able to interrupt the main
@@ -37,10 +34,16 @@ void _emscripten_yield() {
       emscripten_unwind_to_js_event_loop();
     }
 
+    // This is no-op in programs that don't include use of itimer/alarm.
+    _emscripten_check_timers(now);
+
     // Assist other threads by executing proxied operations that are effectively
     // singlethreaded.
     emscripten_main_thread_process_queued_calls();
   }
-
-  _emscripten_thread_sync_code();
+#ifdef __PIC__
+  else {
+    _emscripten_process_dlopen_queue();
+  }
+#endif
 }

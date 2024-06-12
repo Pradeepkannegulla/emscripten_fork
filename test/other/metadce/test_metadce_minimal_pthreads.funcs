@@ -10,6 +10,9 @@ $__pthread_setcancelstate
 $__set_thread_state
 $__stdio_write
 $__timedwait
+$__tl_lock
+$__tl_unlock
+$__wait
 $__wake
 $__wasi_syscall_ret
 $__wasm_call_ctors
@@ -18,6 +21,7 @@ $__wasm_init_tls
 $_do_call
 $_emscripten_proxy_execute_task_queue
 $_emscripten_proxy_main
+$_emscripten_run_in_main_runtime_thread_js
 $_emscripten_thread_crashed
 $_emscripten_thread_exit
 $_emscripten_thread_free_data
@@ -30,6 +34,7 @@ $a_cas_p.1
 $a_dec
 $a_fetch_add
 $a_inc
+$a_store
 $a_swap
 $add
 $dispose_chunk
@@ -37,11 +42,12 @@ $dlfree
 $dlmalloc
 $do_dispatch_to_thread
 $em_queued_call_malloc
+$em_task_queue_execute
+$em_task_queue_is_empty
 $emscripten_async_run_in_main_thread
 $emscripten_current_thread_process_queued_calls
 $emscripten_futex_wait
 $emscripten_futex_wake
-$emscripten_run_in_main_runtime_thread_js
 $emscripten_stack_set_limits
 $get_tasks_for_thread
 $init_file_lock
@@ -53,4 +59,3 @@ $sbrk
 $stackAlloc
 $stackRestore
 $stackSave
-$task_queue_is_empty

@@ -20,6 +20,10 @@ int main() {
   emscripten_wget(file , file);
   printf("back from wget\n");
 
+  printf("calling wget again to overwrite previous file\n");
+  emscripten_wget(file , file);
+  printf("back from wget\n");
+
   FILE * f = fopen(file, "r");
   assert(f);
 
@@ -34,7 +38,7 @@ int main() {
 
   printf("exiting main\n");
   // Implicit return from main with ASYNCIFY + EXIT_RUNTIME
-  // currently doesn't work so we need to explictly exit.
+  // currently doesn't work so we need to explicitly exit.
   // https://github.com/emscripten-core/emscripten/issues/14417
   exit(0);
 }

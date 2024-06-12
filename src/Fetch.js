@@ -5,7 +5,8 @@
  */
 
 var Fetch = {
-  xhrs: [],
+  // Map of integer fetch id to XHR request object
+  xhrs: {},
 
   // The web worker that runs proxied file I/O requests. (this field is populated on demand, start as undefined to save code size)
   // worker: undefined,
@@ -20,17 +21,18 @@ var Fetch = {
   },
 
 #if FETCH_SUPPORT_INDEXEDDB
+  // Be cautious that `onerror` may be run synchronously
   openDatabase: function(dbname, dbversion, onsuccess, onerror) {
     try {
 #if FETCH_DEBUG
-      console.log('fetch: indexedDB.open(dbname="' + dbname + '", dbversion="' + dbversion + '");');
+      dbg('fetch: indexedDB.open(dbname="' + dbname + '", dbversion="' + dbversion + '");');
 #endif
       var openRequest = indexedDB.open(dbname, dbversion);
     } catch (e) { return onerror(e); }
 
     openRequest.onupgradeneeded = (event) => {
 #if FETCH_DEBUG
-      console.log('fetch: IndexedDB upgrade needed. Clearing database.');
+      dbg('fetch: IndexedDB upgrade needed. Clearing database.');
 #endif
       var db = /** @type {IDBDatabase} */ (event.target.result);
       if (db.objectStoreNames.contains('FILES')) {
@@ -44,35 +46,26 @@ var Fetch = {
 #endif
 
   staticInit: function() {
-    var isMainThread = true;
-
 #if FETCH_SUPPORT_INDEXEDDB
     var onsuccess = (db) => {
 #if FETCH_DEBUG
-      console.log('fetch: IndexedDB successfully opened.');
+      dbg('fetch: IndexedDB successfully opened.');
 #endif
       Fetch.dbInstance = db;
-
-      if (isMainThread) {
-        removeRunDependency('library_fetch_init');
-      }
+      removeRunDependency('library_fetch_init');
     };
+
     var onerror = () => {
 #if FETCH_DEBUG
-      console.error('fetch: IndexedDB open failed.');
+      dbg('fetch: IndexedDB open failed.');
 #endif
       Fetch.dbInstance = false;
-
-      if (isMainThread) {
-        removeRunDependency('library_fetch_init');
-      }
+      removeRunDependency('library_fetch_init');
     };
+
+    addRunDependency('library_fetch_init');
     Fetch.openDatabase('emscripten_filesystem', 1, onsuccess, onerror);
 #endif // ~FETCH_SUPPORT_INDEXEDDB
-
-#if FETCH_SUPPORT_INDEXEDDB
-    if (typeof ENVIRONMENT_IS_FETCH_WORKER == 'undefined' || !ENVIRONMENT_IS_FETCH_WORKER) addRunDependency('library_fetch_init');
-#endif
   }
 }
 
@@ -80,7 +73,7 @@ var Fetch = {
 function fetchDeleteCachedData(db, fetch, onsuccess, onerror) {
   if (!db) {
 #if FETCH_DEBUG
-    console.error('fetch: IndexedDB not available!');
+    dbg('fetch: IndexedDB not available!');
 #endif
     onerror(fetch, 0, 'IndexedDB not available!');
     return;
@@ -98,7 +91,7 @@ function fetchDeleteCachedData(db, fetch, onsuccess, onerror) {
     request.onsuccess = (event) => {
       var value = event.target.result;
 #if FETCH_DEBUG
-      console.log('fetch: Deleted file ' + pathStr + ' from IndexedDB');
+      dbg('fetch: Deleted file ' + pathStr + ' from IndexedDB');
 #endif
       HEAPU32[fetch + {{{ C_STRUCTS.emscripten_fetch_t.data }}} >> 2] = 0;
       Fetch.setu64(fetch + {{{ C_STRUCTS.emscripten_fetch_t.numBytes }}}, 0);
@@ -111,7 +104,7 @@ function fetchDeleteCachedData(db, fetch, onsuccess, onerror) {
     };
     request.onerror = (error) => {
 #if FETCH_DEBUG
-      console.error('fetch: Failed to delete file ' + pathStr + ' from IndexedDB! error: ' + error);
+      dbg('fetch: Failed to delete file ' + pathStr + ' from IndexedDB! error: ' + error);
 #endif
       HEAPU16[fetch + {{{ C_STRUCTS.emscripten_fetch_t.readyState }}} >> 1] = 4; // Mimic XHR readyState 4 === 'DONE: The operation is complete'
       HEAPU16[fetch + {{{ C_STRUCTS.emscripten_fetch_t.status }}} >> 1] = 404; // Mimic XHR HTTP status code 404 "Not Found"
@@ -120,7 +113,7 @@ function fetchDeleteCachedData(db, fetch, onsuccess, onerror) {
     };
   } catch(e) {
 #if FETCH_DEBUG
-    console.error('fetch: Failed to load file ' + pathStr + ' from IndexedDB! Got exception ' + e);
+    dbg('fetch: Failed to load file ' + pathStr + ' from IndexedDB! Got exception ' + e);
 #endif
     onerror(fetch, 0, e);
   }
@@ -129,7 +122,7 @@ function fetchDeleteCachedData(db, fetch, onsuccess, onerror) {
 function fetchLoadCachedData(db, fetch, onsuccess, onerror) {
   if (!db) {
 #if FETCH_DEBUG
-    console.error('fetch: IndexedDB not available!');
+    dbg('fetch: IndexedDB not available!');
 #endif
     onerror(fetch, 0, 'IndexedDB not available!');
     return;
@@ -149,7 +142,7 @@ function fetchLoadCachedData(db, fetch, onsuccess, onerror) {
         var value = event.target.result;
         var len = value.byteLength || value.length;
 #if FETCH_DEBUG
-        console.log('fetch: Loaded file ' + pathStr + ' from IndexedDB, length: ' + len);
+        dbg('fetch: Loaded file ' + pathStr + ' from IndexedDB, length: ' + len);
 #endif
         // The data pointer malloc()ed here has the same lifetime as the emscripten_fetch_t structure itself has, and is
         // freed when emscripten_fetch_close() is called.
@@ -166,7 +159,7 @@ function fetchLoadCachedData(db, fetch, onsuccess, onerror) {
       } else {
         // Succeeded to load, but the load came back with the value of undefined, treat that as an error since we never store undefined in db.
 #if FETCH_DEBUG
-        console.error('fetch: File ' + pathStr + ' not found in IndexedDB');
+        dbg('fetch: File ' + pathStr + ' not found in IndexedDB');
 #endif
         HEAPU16[fetch + {{{ C_STRUCTS.emscripten_fetch_t.readyState }}} >> 1] = 4; // Mimic XHR readyState 4 === 'DONE: The operation is complete'
         HEAPU16[fetch + {{{ C_STRUCTS.emscripten_fetch_t.status }}} >> 1] = 404; // Mimic XHR HTTP status code 404 "Not Found"
@@ -176,7 +169,7 @@ function fetchLoadCachedData(db, fetch, onsuccess, onerror) {
     };
     getRequest.onerror = (error) => {
 #if FETCH_DEBUG
-      console.error('fetch: Failed to load file ' + pathStr + ' from IndexedDB!');
+      dbg('fetch: Failed to load file ' + pathStr + ' from IndexedDB!');
 #endif
       HEAPU16[fetch + {{{ C_STRUCTS.emscripten_fetch_t.readyState }}} >> 1] = 4; // Mimic XHR readyState 4 === 'DONE: The operation is complete'
       HEAPU16[fetch + {{{ C_STRUCTS.emscripten_fetch_t.status }}} >> 1] = 404; // Mimic XHR HTTP status code 404 "Not Found"
@@ -185,7 +178,7 @@ function fetchLoadCachedData(db, fetch, onsuccess, onerror) {
     };
   } catch(e) {
 #if FETCH_DEBUG
-    console.error('fetch: Failed to load file ' + pathStr + ' from IndexedDB! Got exception ' + e);
+    dbg('fetch: Failed to load file ' + pathStr + ' from IndexedDB! Got exception ' + e);
 #endif
     onerror(fetch, 0, e);
   }
@@ -194,7 +187,7 @@ function fetchLoadCachedData(db, fetch, onsuccess, onerror) {
 function fetchCacheData(/** @type {IDBDatabase} */ db, fetch, data, onsuccess, onerror) {
   if (!db) {
 #if FETCH_DEBUG
-    console.error('fetch: IndexedDB not available!');
+    dbg('fetch: IndexedDB not available!');
 #endif
     onerror(fetch, 0, 'IndexedDB not available!');
     return;
@@ -211,7 +204,7 @@ function fetchCacheData(/** @type {IDBDatabase} */ db, fetch, data, onsuccess, o
     var putRequest = packages.put(data, destinationPathStr);
     putRequest.onsuccess = (event) => {
 #if FETCH_DEBUG
-      console.log('fetch: Stored file "' + destinationPathStr + '" to IndexedDB cache.');
+      dbg('fetch: Stored file "' + destinationPathStr + '" to IndexedDB cache.');
 #endif
       HEAPU16[fetch + {{{ C_STRUCTS.emscripten_fetch_t.readyState }}} >> 1] = 4; // Mimic XHR readyState 4 === 'DONE: The operation is complete'
       HEAPU16[fetch + {{{ C_STRUCTS.emscripten_fetch_t.status }}} >> 1] = 200; // Mimic XHR HTTP status code 200 "OK"
@@ -220,7 +213,7 @@ function fetchCacheData(/** @type {IDBDatabase} */ db, fetch, data, onsuccess, o
     };
     putRequest.onerror = (error) => {
 #if FETCH_DEBUG
-      console.error('fetch: Failed to store file "' + destinationPathStr + '" to IndexedDB cache!');
+      dbg('fetch: Failed to store file "' + destinationPathStr + '" to IndexedDB cache!');
 #endif
       // Most likely we got an error if IndexedDB is unwilling to store any more data for this page.
       // TODO: Can we identify and break down different IndexedDB-provided errors and convert those
@@ -232,7 +225,7 @@ function fetchCacheData(/** @type {IDBDatabase} */ db, fetch, data, onsuccess, o
     };
   } catch(e) {
 #if FETCH_DEBUG
-      console.error('fetch: Failed to store file "' + destinationPathStr + '" to IndexedDB cache! Exception: ' + e);
+      dbg('fetch: Failed to store file "' + destinationPathStr + '" to IndexedDB cache! Exception: ' + e);
 #endif
     onerror(fetch, 0, e);
   }
@@ -243,7 +236,7 @@ function fetchXHR(fetch, onsuccess, onerror, onprogress, onreadystatechange) {
   var url = HEAPU32[fetch + {{{ C_STRUCTS.emscripten_fetch_t.url }}} >> 2];
   if (!url) {
 #if FETCH_DEBUG
-    console.error('fetch: XHR failed, no URL specified!');
+    dbg('fetch: XHR failed, no URL specified!');
 #endif
     onerror(fetch, 0, 'no url specified!');
     return;
@@ -281,8 +274,8 @@ function fetchXHR(fetch, onsuccess, onerror, onprogress, onreadystatechange) {
   var xhr = new XMLHttpRequest();
   xhr.withCredentials = withCredentials;
 #if FETCH_DEBUG
-  console.log('fetch: xhr.timeout: ' + xhr.timeout + ', xhr.withCredentials: ' + xhr.withCredentials);
-  console.log('fetch: xhr.open(requestMethod="' + requestMethod + '", url: "' + url_ +'", userName: ' + userNameStr + ', password: ' + passwordStr + ');');
+  dbg('fetch: xhr.timeout: ' + xhr.timeout + ', xhr.withCredentials: ' + xhr.withCredentials);
+  dbg('fetch: xhr.open(requestMethod="' + requestMethod + '", url: "' + url_ +'", userName: ' + userNameStr + ', password: ' + passwordStr + ');');
 #endif
   xhr.open(requestMethod, url_, !fetchAttrSynchronous, userNameStr, passwordStr);
   if (!fetchAttrSynchronous) xhr.timeout = timeoutMsecs; // XHR timeout field is only accessible in async XHRs, and must be set after .open() but before .send().
@@ -295,7 +288,7 @@ function fetchXHR(fetch, onsuccess, onerror, onprogress, onreadystatechange) {
   if (overriddenMimeType) {
     var overriddenMimeTypeStr = UTF8ToString(overriddenMimeType);
 #if FETCH_DEBUG
-    console.log('fetch: xhr.overrideMimeType("' + overriddenMimeTypeStr + '");');
+    dbg('fetch: xhr.overrideMimeType("' + overriddenMimeTypeStr + '");');
 #endif
     xhr.overrideMimeType(overriddenMimeTypeStr);
   }
@@ -309,14 +302,13 @@ function fetchXHR(fetch, onsuccess, onerror, onprogress, onreadystatechange) {
       var keyStr = UTF8ToString(key);
       var valueStr = UTF8ToString(value);
 #if FETCH_DEBUG
-      console.log('fetch: xhr.setRequestHeader("' + keyStr + '", "' + valueStr + '");');
+      dbg('fetch: xhr.setRequestHeader("' + keyStr + '", "' + valueStr + '");');
 #endif
       xhr.setRequestHeader(keyStr, valueStr);
     }
   }
-  Fetch.xhrs.push(xhr);
-  var id = Fetch.xhrs.length;
-  HEAPU32[fetch + {{{ C_STRUCTS.emscripten_fetch_t.id }}} >> 2] = id;
+  var id = HEAPU32[fetch + {{{ C_STRUCTS.emscripten_fetch_t.id }}} >> 2];
+  Fetch.xhrs[id] = xhr;
   var data = (dataPtr && dataLength) ? HEAPU8.slice(dataPtr, dataPtr + dataLength) : null;
   // TODO: Support specifying custom headers to the request.
 
@@ -324,13 +316,15 @@ function fetchXHR(fetch, onsuccess, onerror, onprogress, onreadystatechange) {
   // and on error (despite an error, there may be a response, like a 404 page).
   // This receives a condition, which determines whether to save the xhr's
   // response, or just 0.
-  function saveResponse(condition) {
+  function saveResponseAndStatus() {
     var ptr = 0;
     var ptrLen = 0;
-    if (condition) {
-      ptrLen = xhr.response ? xhr.response.byteLength : 0;
+    if (xhr.response && fetchAttrLoadToMemory && HEAPU32[fetch + {{{ C_STRUCTS.emscripten_fetch_t.data }}} >> 2] === 0) {
+      ptrLen = xhr.response.byteLength;
+    }
+    if (ptrLen > 0) {
 #if FETCH_DEBUG
-      console.log('fetch: allocating ' + ptrLen + ' bytes in Emscripten heap for xhr data');
+      dbg('fetch: allocating ' + ptrLen + ' bytes in Emscripten heap for xhr data');
 #endif
       // The data pointer malloc()ed here has the same lifetime as the emscripten_fetch_t structure itself has, and is
       // freed when emscripten_fetch_close() is called.
@@ -339,12 +333,8 @@ function fetchXHR(fetch, onsuccess, onerror, onprogress, onreadystatechange) {
     }
     HEAPU32[fetch + {{{ C_STRUCTS.emscripten_fetch_t.data }}} >> 2] = ptr;
     Fetch.setu64(fetch + {{{ C_STRUCTS.emscripten_fetch_t.numBytes }}}, ptrLen);
-  }
-
-  xhr.onload = (e) => {
-    saveResponse(fetchAttrLoadToMemory && !fetchAttrStreamData);
-    var len = xhr.response ? xhr.response.byteLength : 0;
     Fetch.setu64(fetch + {{{ C_STRUCTS.emscripten_fetch_t.dataOffset }}}, 0);
+    var len = xhr.response ? xhr.response.byteLength : 0;
     if (len) {
       // If the final XHR.onload handler receives the bytedata to compute total length, report that,
       // otherwise don't write anything out here, which will retain the latest byte size reported in
@@ -354,42 +344,57 @@ function fetchXHR(fetch, onsuccess, onerror, onprogress, onreadystatechange) {
     HEAPU16[fetch + {{{ C_STRUCTS.emscripten_fetch_t.readyState }}} >> 1] = xhr.readyState;
     HEAPU16[fetch + {{{ C_STRUCTS.emscripten_fetch_t.status }}} >> 1] = xhr.status;
     if (xhr.statusText) stringToUTF8(xhr.statusText, fetch + {{{ C_STRUCTS.emscripten_fetch_t.statusText }}}, 64);
+  }
+
+  xhr.onload = (e) => {
+    // check if xhr was aborted by user and don't try to call back
+    if (!(id in Fetch.xhrs)) { 
+      return;
+    }
+    saveResponseAndStatus();
     if (xhr.status >= 200 && xhr.status < 300) {
 #if FETCH_DEBUG
-      console.log('fetch: xhr of URL "' + xhr.url_ + '" / responseURL "' + xhr.responseURL + '" succeeded with status 200');
+      dbg('fetch: xhr of URL "' + xhr.url_ + '" / responseURL "' + xhr.responseURL + '" succeeded with status ' + xhr.status);
 #endif
       if (onsuccess) onsuccess(fetch, xhr, e);
     } else {
 #if FETCH_DEBUG
-      console.error('fetch: xhr of URL "' + xhr.url_ + '" / responseURL "' + xhr.responseURL + '" failed with status ' + xhr.status);
+      dbg('fetch: xhr of URL "' + xhr.url_ + '" / responseURL "' + xhr.responseURL + '" failed with status ' + xhr.status);
 #endif
       if (onerror) onerror(fetch, xhr, e);
     }
   };
   xhr.onerror = (e) => {
-    saveResponse(fetchAttrLoadToMemory);
-    var status = xhr.status; // XXX TODO: Overwriting xhr.status doesn't work here, so don't override anywhere else either.
+    // check if xhr was aborted by user and don't try to call back
+    if (!(id in Fetch.xhrs)) { 
+      return;
+    }
 #if FETCH_DEBUG
-    console.error('fetch: xhr of URL "' + xhr.url_ + '" / responseURL "' + xhr.responseURL + '" finished with error, readyState ' + xhr.readyState + ' and status ' + status);
+    dbg('fetch: xhr of URL "' + xhr.url_ + '" / responseURL "' + xhr.responseURL + '" finished with error, readyState ' + xhr.readyState + ' and status ' + xhr.status);
 #endif
-    Fetch.setu64(fetch + {{{ C_STRUCTS.emscripten_fetch_t.dataOffset }}}, 0);
-    Fetch.setu64(fetch + {{{ C_STRUCTS.emscripten_fetch_t.totalBytes }}}, xhr.response ? xhr.response.byteLength : 0);
-    HEAPU16[fetch + {{{ C_STRUCTS.emscripten_fetch_t.readyState }}} >> 1] = xhr.readyState;
-    HEAPU16[fetch + {{{ C_STRUCTS.emscripten_fetch_t.status }}} >> 1] = status;
+    saveResponseAndStatus();
     if (onerror) onerror(fetch, xhr, e);
   };
   xhr.ontimeout = (e) => {
+    // check if xhr was aborted by user and don't try to call back
+    if (!(id in Fetch.xhrs)) { 
+      return;
+    }
 #if FETCH_DEBUG
-    console.error('fetch: xhr of URL "' + xhr.url_ + '" / responseURL "' + xhr.responseURL + '" timed out, readyState ' + xhr.readyState + ' and status ' + xhr.status);
+    dbg('fetch: xhr of URL "' + xhr.url_ + '" / responseURL "' + xhr.responseURL + '" timed out, readyState ' + xhr.readyState + ' and status ' + xhr.status);
 #endif
     if (onerror) onerror(fetch, xhr, e);
   };
   xhr.onprogress = (e) => {
+    // check if xhr was aborted by user and don't try to call back
+    if (!(id in Fetch.xhrs)) { 
+      return;
+    }
     var ptrLen = (fetchAttrLoadToMemory && fetchAttrStreamData && xhr.response) ? xhr.response.byteLength : 0;
     var ptr = 0;
-    if (fetchAttrLoadToMemory && fetchAttrStreamData) {
+    if (ptrLen > 0 && fetchAttrLoadToMemory && fetchAttrStreamData) {
 #if FETCH_DEBUG
-      console.log('fetch: allocating ' + ptrLen + ' bytes in Emscripten heap for xhr data');
+      dbg('fetch: allocating ' + ptrLen + ' bytes in Emscripten heap for xhr data');
 #endif
 #if ASSERTIONS
       assert(onprogress, 'When doing a streaming fetch, you should have an onprogress handler registered to receive the chunks!');
@@ -413,6 +418,11 @@ function fetchXHR(fetch, onsuccess, onerror, onprogress, onreadystatechange) {
     }
   };
   xhr.onreadystatechange = (e) => {
+    // check if xhr was aborted by user and don't try to call back
+    if (!(id in Fetch.xhrs)) {
+      {{{ runtimeKeepalivePop() }}}
+      return;
+    }
     HEAPU16[fetch + {{{ C_STRUCTS.emscripten_fetch_t.readyState }}} >> 1] = xhr.readyState;
     if (xhr.readyState >= 2) {
       HEAPU16[fetch + {{{ C_STRUCTS.emscripten_fetch_t.status }}} >> 1] = xhr.status;
@@ -420,13 +430,13 @@ function fetchXHR(fetch, onsuccess, onerror, onprogress, onreadystatechange) {
     if (onreadystatechange) onreadystatechange(fetch, xhr, e);
   };
 #if FETCH_DEBUG
-  console.log('fetch: xhr.send(data=' + data + ')');
+  dbg('fetch: xhr.send(data=' + data + ')');
 #endif
   try {
     xhr.send(data);
   } catch(e) {
 #if FETCH_DEBUG
-    console.error('fetch: xhr failed with exception: ' + e);
+    dbg('fetch: xhr failed with exception: ' + e);
 #endif
     if (onerror) onerror(fetch, xhr, e);
   }
@@ -464,7 +474,7 @@ function startFetch(fetch, successcb, errorcb, progresscb, readystatechangecb) {
 
   var reportSuccess = (fetch, xhr, e) => {
 #if FETCH_DEBUG
-    console.log('fetch: operation success. e: ' + e);
+    dbg('fetch: operation success. e: ' + e);
 #endif
     {{{ runtimeKeepalivePop() }}}
     doCallback(() => {
@@ -482,7 +492,7 @@ function startFetch(fetch, successcb, errorcb, progresscb, readystatechangecb) {
 
   var reportError = (fetch, xhr, e) => {
 #if FETCH_DEBUG
-    console.error('fetch: operation failed: ' + e);
+    dbg('fetch: operation failed: ' + e);
 #endif
     {{{ runtimeKeepalivePop() }}}
     doCallback(() => {
@@ -493,7 +503,7 @@ function startFetch(fetch, successcb, errorcb, progresscb, readystatechangecb) {
 
   var reportReadyStateChange = (fetch, xhr, e) => {
 #if FETCH_DEBUG
-    console.log('fetch: ready state change. e: ' + e);
+    dbg('fetch: ready state change. e: ' + e);
 #endif
     doCallback(() => {
       if (onreadystatechange) {{{ makeDynCall('vp', 'onreadystatechange') }}}(fetch);
@@ -503,7 +513,7 @@ function startFetch(fetch, successcb, errorcb, progresscb, readystatechangecb) {
 
   var performUncachedXhr = (fetch, xhr, e) => {
 #if FETCH_DEBUG
-    console.error('fetch: starting (uncached) XHR: ' + e);
+    dbg('fetch: starting (uncached) XHR: ' + e);
 #endif
     fetchXHR(fetch, reportSuccess, reportError, reportProgress, reportReadyStateChange);
   };
@@ -511,11 +521,11 @@ function startFetch(fetch, successcb, errorcb, progresscb, readystatechangecb) {
 #if FETCH_SUPPORT_INDEXEDDB
   var cacheResultAndReportSuccess = (fetch, xhr, e) => {
 #if FETCH_DEBUG
-    console.log('fetch: operation success. Caching result.. e: ' + e);
+    dbg('fetch: operation success. Caching result.. e: ' + e);
 #endif
     var storeSuccess = (fetch, xhr, e) => {
 #if FETCH_DEBUG
-      console.log('fetch: IndexedDB store succeeded.');
+      dbg('fetch: IndexedDB store succeeded.');
 #endif
       {{{ runtimeKeepalivePop() }}}
       doCallback(() => {
@@ -525,7 +535,7 @@ function startFetch(fetch, successcb, errorcb, progresscb, readystatechangecb) {
     };
     var storeError = (fetch, xhr, e) => {
 #if FETCH_DEBUG
-      console.error('fetch: IndexedDB store failed.');
+      dbg('fetch: IndexedDB store failed.');
 #endif
       {{{ runtimeKeepalivePop() }}}
       doCallback(() => {
@@ -538,7 +548,7 @@ function startFetch(fetch, successcb, errorcb, progresscb, readystatechangecb) {
 
   var performCachedXhr = (fetch, xhr, e) => {
 #if FETCH_DEBUG
-    console.error('fetch: starting (cached) XHR: ' + e);
+    dbg('fetch: starting (cached) XHR: ' + e);
 #endif
     fetchXHR(fetch, cacheResultAndReportSuccess, reportError, reportProgress, reportReadyStateChange);
   };
@@ -555,7 +565,7 @@ function startFetch(fetch, successcb, errorcb, progresscb, readystatechangecb) {
     fetchXHR(fetch, fetchAttrPersistFile ? cacheResultAndReportSuccess : reportSuccess, reportError, reportProgress, reportReadyStateChange);
   } else {
 #if FETCH_DEBUG
-    console.error('fetch: Invalid combination of flags passed.');
+    dbg('fetch: Invalid combination of flags passed.');
 #endif
     return 0; // todo: free
   }
@@ -567,11 +577,11 @@ function startFetch(fetch, successcb, errorcb, progresscb, readystatechangecb) {
 }
 
 function fetchGetResponseHeadersLength(id) {
-    return lengthBytesUTF8(Fetch.xhrs[id-1].getAllResponseHeaders()) + 1;
+    return lengthBytesUTF8(Fetch.xhrs[id].getAllResponseHeaders()) + 1;
 }
 
 function fetchGetResponseHeaders(id, dst, dstSizeBytes) {
-    var responseHeaders = Fetch.xhrs[id-1].getAllResponseHeaders();
+    var responseHeaders = Fetch.xhrs[id].getAllResponseHeaders();
     var lengthBytes = lengthBytesUTF8(responseHeaders) + 1;
     stringToUTF8(responseHeaders, dst, dstSizeBytes);
     return Math.min(lengthBytes, dstSizeBytes);
@@ -579,9 +589,15 @@ function fetchGetResponseHeaders(id, dst, dstSizeBytes) {
 
 //Delete the xhr JS object, allowing it to be garbage collected.
 function fetchFree(id) {
-  //Note: should just be [id], but indexes off by 1 (see: #8803)
 #if FETCH_DEBUG
-  console.log("fetch: Deleting id:" + (id-1) + " of " + Fetch.xhrs);
+    dbg("fetch: Deleting id:" + id + " of " + Fetch.xhrs);
 #endif
-  delete Fetch.xhrs[id-1];
+    var xhr = Fetch.xhrs[id];
+    if (xhr) {
+        delete Fetch.xhrs[id];
+        // check if fetch is still in progress and should be aborted
+        if (xhr.readyState > 0 && xhr.readyState < 4) {
+            xhr.abort();
+        }
+    }
 }

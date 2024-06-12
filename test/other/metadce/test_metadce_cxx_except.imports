@@ -1,9 +1,7 @@
-env.__cxa_allocate_exception
 env.__cxa_begin_catch
 env.__cxa_end_catch
 env.__cxa_find_matching_catch_2
 env.__cxa_find_matching_catch_3
-env.__cxa_free_exception
 env.__cxa_rethrow
 env.__cxa_throw
 env.__cxa_uncaught_exceptions
@@ -11,7 +9,6 @@ env.__resumeException
 env.abort
 env.emscripten_memcpy_big
 env.emscripten_resize_heap
-env.getTempRet0
 env.invoke_diii
 env.invoke_fiii
 env.invoke_i
@@ -32,7 +29,6 @@ env.invoke_viiii
 env.invoke_viiiiiii
 env.invoke_viiiiiiiiii
 env.invoke_viiiiiiiiiiiiiii
-env.setTempRet0
 env.strftime_l
 wasi_snapshot_preview1.environ_get
 wasi_snapshot_preview1.environ_sizes_get

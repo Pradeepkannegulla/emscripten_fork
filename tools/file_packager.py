@@ -73,6 +73,7 @@ import shutil
 import sys
 from subprocess import PIPE
 from textwrap import dedent
+from typing import List
 
 __scriptdir__ = os.path.dirname(os.path.abspath(__file__))
 __rootdir__ = os.path.dirname(__scriptdir__)
@@ -93,7 +94,7 @@ DDS_HEADER_SIZE = 128
 # to work around silly av false positives
 AV_WORKAROUND = 0
 
-excluded_patterns = []
+excluded_patterns: List[str] = []
 new_data_files = []
 
 
@@ -344,9 +345,9 @@ def generate_object_file(data_files):
     target = 'wasm64-unknown-emscripten'
   else:
     target = 'wasm32-unknown-emscripten'
-  shared.check_call([shared.LLVM_MC,
-                     '-filetype=obj',
-                     '-triple=' + target,
+  shared.check_call([shared.EMCC,
+                     '-c',
+                     '--target=' + target,
                      '-o', options.obj_output,
                      asm_file])
 
@@ -474,8 +475,8 @@ def main():
   # even if we cd'd into a symbolic link.
   curr_abspath = os.path.abspath(os.getcwd())
 
-  if not file_.explicit_dst_path:
-    for file_ in data_files:
+  for file_ in data_files:
+    if not file_.explicit_dst_path:
       # This file was not defined with src@dst, so we inferred the destination
       # from the source. In that case, we require that the destination be
       # within the current working directory.
@@ -586,9 +587,8 @@ def generate_js(data_target, data_files, metadata):
 
   Module.expectedDataFileDownloads++;
   (function() {
-    // When running as a pthread, FS operations are proxied to the main thread, so we don't need to
-    // fetch the .data bundle on the worker
-    if (Module['ENVIRONMENT_IS_PTHREAD']) return;
+    // Do not attempt to redownload the virtual filesystem data when in a pthread or a Wasm Worker context.
+    if (Module['ENVIRONMENT_IS_PTHREAD'] || Module['$ww']) return;
     var loadPackage = function(metadata) {\n'''
 
   code = '''
@@ -996,7 +996,7 @@ def generate_js(data_target, data_files, metadata):
     code += '''
       function processPackageData(arrayBuffer) {
         assert(arrayBuffer, 'Loading data file failed.');
-        assert(arrayBuffer instanceof ArrayBuffer, 'bad input to processPackageData');
+        assert(arrayBuffer.constructor.name === ArrayBuffer.name, 'bad input to processPackageData');
         var byteArray = new Uint8Array(arrayBuffer);
         var curr;
         %s

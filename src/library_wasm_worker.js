@@ -1,6 +1,9 @@
-{{{ (function() { global.captureModuleArg = function() { return MODULARIZE ? '' : 'self.Module=d;'; }; return null; })(); }}}
-{{{ (function() { global.instantiateModule = function() { return MODULARIZE ? `${EXPORT_NAME}(d);` : ''; }; return null; })(); }}}
-{{{ (function() { global.instantiateWasm = function() { return MINIMAL_RUNTIME ? '' : 'd[`instantiateWasm`]=(i,r)=>{var n=new WebAssembly.Instance(d[`wasm`],i);r(n,d[`wasm`]);return n.exports};'; }; return null; })(); }}}
+{{{
+  global.captureModuleArg = () => MODULARIZE ? '' : 'self.Module=d;';
+  global.instantiateModule = () => MODULARIZE ? `${EXPORT_NAME}(d);` : '';
+  global.instantiateWasm = () => MINIMAL_RUNTIME ? '' : 'd[`instantiateWasm`]=(i,r)=>{var n=new WebAssembly.Instance(d[`wasm`],i);r(n,d[`wasm`]);return n.exports};';
+  null;
+}}}
 
 #if WASM_WORKERS
 
@@ -47,7 +50,7 @@ mergeInto(LibraryManager.library, {
 
   // src/postamble_minimal.js brings this symbol in to the build, and calls this function synchronously
   // from main JS file at the startup of each Worker.
-  _wasm_worker_initializeRuntime__deps: ['_wasm_worker_delayedMessageQueue', '_wasm_worker_runPostMessage'],
+  _wasm_worker_initializeRuntime__deps: ['_wasm_worker_delayedMessageQueue', '_wasm_worker_runPostMessage', '_wasm_worker_appendToQueue'],
   _wasm_worker_initializeRuntime: function() {
     let m = Module;
 #if ASSERTIONS
@@ -67,22 +70,33 @@ mergeInto(LibraryManager.library, {
 #endif
     // Run the C side Worker initialization for stack and TLS.
     _emscripten_wasm_worker_initialize(m['sb'], m['sz']);
+#if USE_PTHREADS
+    // Record that this Wasm Worker supports synchronous blocking in emscripten_futex_wake().
+    ___set_thread_state(/*thread_ptr=*/0, /*is_main_thread=*/0, /*is_runtime_thread=*/0, /*supports_wait=*/0);
+#endif
 #if STACK_OVERFLOW_CHECK >= 2
     // Fix up stack base. (TLS frame is created at the bottom address end of the stack)
     // See https://github.com/emscripten-core/emscripten/issues/16496
     ___set_stack_limits(_emscripten_stack_get_base(), _emscripten_stack_get_end());
 #endif
 
-    // The Wasm Worker runtime is now up, so we can start processing
-    // any postMessage function calls that have been received. Drop the temp
-    // message handler that queued any pending incoming postMessage function calls ...
-    removeEventListener('message', __wasm_worker_appendToQueue);
-    // ... then flush whatever messages we may have already gotten in the queue,
-    //     and clear __wasm_worker_delayedMessageQueue to undefined ...
-    __wasm_worker_delayedMessageQueue = __wasm_worker_delayedMessageQueue.forEach(__wasm_worker_runPostMessage);
-    // ... and finally register the proper postMessage handler that immediately
-    // dispatches incoming function calls without queueing them.
-    addEventListener('message', __wasm_worker_runPostMessage);
+#if AUDIO_WORKLET
+    // Audio Worklets do not have postMessage()ing capabilities.
+    if (typeof AudioWorkletGlobalScope === 'undefined') {
+#endif
+      // The Wasm Worker runtime is now up, so we can start processing
+      // any postMessage function calls that have been received. Drop the temp
+      // message handler that queued any pending incoming postMessage function calls ...
+      removeEventListener('message', __wasm_worker_appendToQueue);
+      // ... then flush whatever messages we may have already gotten in the queue,
+      //     and clear __wasm_worker_delayedMessageQueue to undefined ...
+      __wasm_worker_delayedMessageQueue = __wasm_worker_delayedMessageQueue.forEach(__wasm_worker_runPostMessage);
+      // ... and finally register the proper postMessage handler that immediately
+      // dispatches incoming function calls without queueing them.
+      addEventListener('message', __wasm_worker_runPostMessage);
+#if AUDIO_WORKLET
+    }
+#endif
   },
 
 #if WASM_WORKERS == 2
@@ -188,7 +202,7 @@ mergeInto(LibraryManager.library, {
   emscripten_wasm_worker_post_function_viii: 'emscripten_wasm_worker_post_function_3',
   emscripten_wasm_worker_post_function_vddd: 'emscripten_wasm_worker_post_function_3',
 
-  emscripten_wasm_worker_post_function_sig__deps: ['$readAsmConstArgs'],
+  emscripten_wasm_worker_post_function_sig__deps: ['$readEmAsmArgs'],
   emscripten_wasm_worker_post_function_sig__sig: 'vippp',
   emscripten_wasm_worker_post_function_sig: function(id, funcPtr, sigPtr, varargs) {
 #if ASSERTIONS
@@ -198,7 +212,7 @@ mergeInto(LibraryManager.library, {
     assert(UTF8ToString(sigPtr)[0] != 'v', 'Do NOT specify the return argument in the signature string for a call to emscripten_wasm_worker_post_function_sig(), just pass the function arguments.');
     assert(varargs);
 #endif
-    _wasm_workers[id].postMessage({'_wsc': funcPtr, 'x': readAsmConstArgs(sigPtr, varargs) });
+    _wasm_workers[id].postMessage({'_wsc': funcPtr, 'x': readEmAsmArgs(sigPtr, varargs) });
   },
 
   _emscripten_atomic_wait_states: "['ok', 'not-equal', 'timed-out']",

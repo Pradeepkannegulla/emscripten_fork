@@ -27,6 +27,7 @@
 
 #if SANITIZER_EMSCRIPTEN
 #include "lsan/lsan_allocator.h"
+#include "emscripten/heap.h"
 #endif
 
 #if CAN_SANITIZE_LEAKS
@@ -109,7 +110,7 @@ static const char kStdSuppressions[] =
     // definition.
     "leak:*pthread_exit*\n"
 #  endif  // SANITIZER_SUPPRESS_LEAK_ON_PTHREAD_EXIT
-#  if SANITIZER_MAC
+#  if SANITIZER_APPLE
     // For Darwin and os_log/os_trace: https://reviews.llvm.org/D35173
     "leak:*_os_trace*\n"
 #  endif
@@ -139,10 +140,11 @@ Suppression *LeakSuppressionContext::GetSuppressionForAddr(uptr addr) {
   Suppression *s = nullptr;
 
   // Suppress by module name.
-  if (const char *module_name =
-          Symbolizer::GetOrInit()->GetModuleNameForPc(addr))
-    if (context.Match(module_name, kSuppressionLeak, &s))
-      return s;
+  const char *module_name = Symbolizer::GetOrInit()->GetModuleNameForPc(addr);
+  if (!module_name)
+    module_name = "<unknown module>";
+  if (context.Match(module_name, kSuppressionLeak, &s))
+    return s;
 
   // Suppress by file or function name.
   SymbolizedStack *frames = Symbolizer::GetOrInit()->SymbolizePC(addr);
@@ -251,7 +253,7 @@ class Decorator : public __sanitizer::SanitizerCommonDecorator {
   const char *Leak() { return Blue(); }
 };
 
-static inline bool CanBeAHeapPointer(uptr p) {
+static inline bool MaybeUserPointer(uptr p) {
   // Since our heap is located in mmap-ed memory, we can assume a sensible lower
   // bound on heap addresses.
   const uptr kMinAddress = 4 * 4096;
@@ -263,8 +265,8 @@ static inline bool CanBeAHeapPointer(uptr p) {
 #  elif defined(__mips64)
   return ((p >> 40) == 0);
 #  elif defined(__aarch64__)
-  unsigned runtimeVMA = (MostSignificantSetBitIndex(GET_CURRENT_FRAME()) + 1);
-  return ((p >> runtimeVMA) == 0);
+  // Accept up to 48 bit VMA.
+  return ((p >> 48) == 0);
 #  else
   return true;
 #  endif
@@ -296,7 +298,7 @@ void ScanRangeForPointers(uptr begin, uptr end, Frontier *frontier,
 
   for (; pp + sizeof(void *) <= end; pp += alignment) {  // NOLINT
     void *p = *reinterpret_cast<void **>(pp);
-    if (!CanBeAHeapPointer(reinterpret_cast<uptr>(p)))
+    if (!MaybeUserPointer(reinterpret_cast<uptr>(p)))
       continue;
     uptr chunk = PointsIntoChunk(p);
     if (!chunk)
@@ -370,6 +372,7 @@ extern "C" SANITIZER_WEAK_ATTRIBUTE void __libc_iterate_dynamic_tls(
     pid_t, void (*cb)(void *, void *, uptr, void *), void *);
 #    endif
 
+#if !SANITIZER_EMSCRIPTEN
 static void ProcessThreadRegistry(Frontier *frontier) {
   InternalMmapVector<uptr> ptrs;
   GetThreadRegistryLocked()->RunCallbackForEachThreadLocked(
@@ -391,7 +394,6 @@ static void ProcessThreadRegistry(Frontier *frontier) {
   }
 }
 
-#if !SANITIZER_EMSCRIPTEN
 // Scans thread data (stacks and TLS) for heap pointers.
 static void ProcessThreads(SuspendedThreadsList const &suspended_threads,
                            Frontier *frontier) {
@@ -529,10 +531,6 @@ void ScanRootRegion(Frontier *frontier, const RootRegion &root_region,
     ScanRangeForPointers(intersection_begin, intersection_end, frontier, "ROOT",
                          kReachable);
 }
-
-#if SANITIZER_EMSCRIPTEN
-extern "C" uptr emscripten_get_heap_size();
-#endif
 
 static void ProcessRootRegion(Frontier *frontier,
                               const RootRegion &root_region) {
@@ -675,6 +673,7 @@ void LeakSuppressionContext::PrintMatchedSuppressions() {
   Printf("%s\n\n", line);
 }
 
+#if !SANITIZER_EMSCRIPTEN
 static void ReportIfNotSuspended(ThreadContextBase *tctx, void *arg) {
   const InternalMmapVector<tid_t> &suspended_threads =
       *(const InternalMmapVector<tid_t> *)arg;
@@ -686,14 +685,15 @@ static void ReportIfNotSuspended(ThreadContextBase *tctx, void *arg) {
           tctx->os_id);
   }
 }
+#endif
 
-#  if SANITIZER_FUCHSIA
+#  if SANITIZER_FUCHSIA || SANITIZER_EMSCRIPTEN
 
 // Fuchsia provides a libc interface that guarantees all threads are
 // covered, and SuspendedThreadList is never really used.
 static void ReportUnsuspendedThreads(const SuspendedThreadsList &) {}
 
-#  else  // !SANITIZER_FUCHSIA
+#  else  // !(SANITIZER_FUCHSIA || SANITIZER_FUCHSIA)
 
 static void ReportUnsuspendedThreads(
     const SuspendedThreadsList &suspended_threads) {
@@ -714,9 +714,7 @@ static void CheckForLeaksCallback(const SuspendedThreadsList &suspended_threads,
   CheckForLeaksParam *param = reinterpret_cast<CheckForLeaksParam *>(arg);
   CHECK(param);
   CHECK(!param->success);
-#if !SANITIZER_EMSCRIPTEN
   ReportUnsuspendedThreads(suspended_threads);
-#endif
   ClassifyAllChunks(suspended_threads, &param->frontier);
   ForEachChunk(CollectLeaksCb, &param->leaks);
   // Clean up for subsequent leak checks. This assumes we did not overwrite any
@@ -989,7 +987,7 @@ void __lsan_ignore_object(const void *p) {
   Lock l(&global_mutex);
   IgnoreObjectResult res = IgnoreObjectLocked(p);
   if (res == kIgnoreObjectInvalid)
-    VReport(1, "__lsan_ignore_object(): no heap object found at %p", p);
+    VReport(1, "__lsan_ignore_object(): no heap object found at %p\n", p);
   if (res == kIgnoreObjectAlreadyIgnored)
     VReport(1,
             "__lsan_ignore_object(): "
@@ -1072,13 +1070,11 @@ SANITIZER_INTERFACE_WEAK_DEF(const char *, __lsan_default_options, void) {
 }
 
 #if !SANITIZER_SUPPORTS_WEAK_HOOKS
-SANITIZER_INTERFACE_ATTRIBUTE SANITIZER_WEAK_ATTRIBUTE int
-__lsan_is_turned_off() {
+SANITIZER_INTERFACE_WEAK_DEF(int, __lsan_is_turned_off, void) {
   return 0;
 }
 
-SANITIZER_INTERFACE_ATTRIBUTE SANITIZER_WEAK_ATTRIBUTE const char *
-__lsan_default_suppressions() {
+SANITIZER_INTERFACE_WEAK_DEF(const char *, __lsan_default_suppressions, void) {
   return "";
 }
 #endif

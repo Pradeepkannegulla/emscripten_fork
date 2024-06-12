@@ -30,7 +30,7 @@ int wasmfs_create_file(const char* pathname, mode_t mode, backend_t backend);
 
 // Creates a new directory in the new file system under a specific backend.
 // Returns 0 on success like `mkdir`, or a negative value on error.
-int wasmfs_create_directory(const char* path, long mode, backend_t backend);
+int wasmfs_create_directory(const char* path, mode_t mode, backend_t backend);
 
 // Backend creation
 
@@ -40,15 +40,34 @@ backend_t wasmfs_create_js_file_backend(void);
 // A function that receives a void* and returns a backend.
 typedef backend_t (*backend_constructor_t)(void*);
 
-// Creates a Proxied Backend in the new file system.
-backend_t wasmfs_create_proxied_backend(backend_constructor_t create_backend,
-                                        void* arg);
+backend_t wasmfs_create_memory_backend(void);
 
+// Note: this cannot be called on the browser main thread because it might
+// deadlock while waiting for its dedicated worker thread to be spawned.
+//
+// Note: This function blocks on the main browser thread returning to its event
+// loop. Calling this function while holding a lock the main thread is waiting
+// to acquire will cause a deadlock.
+//
+// TODO: Add an async version of this function that will work on the main
+// thread.
 backend_t wasmfs_create_fetch_backend(const char* base_url);
 
 backend_t wasmfs_create_node_backend(const char* root);
 
+// Note: this cannot be called on the browser main thread because it might
+// deadlock while waiting for the OPFS dedicated worker thread to be spawned.
+//
+// Note: This function blocks on the main browser thread returning to its event
+// loop. Calling this function while holding a lock the main thread is waiting
+// to acquire will cause a deadlock.
+//
+// TODO: Add an async version of this function that will work on the main
+// thread.
 backend_t wasmfs_create_opfs_backend(void);
+
+backend_t wasmfs_create_icase_backend(backend_constructor_t create_backend,
+                                      void* arg);
 
 // Hooks
 

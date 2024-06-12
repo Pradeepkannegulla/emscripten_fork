@@ -6,12 +6,12 @@
 
 mergeInto(LibraryManager.library, {
   $NODEFS__deps: ['$FS', '$PATH', '$ERRNO_CODES', '$mmapAlloc'],
-  $NODEFS__postset: 'if (ENVIRONMENT_IS_NODE) { requireNodeFS(); NODEFS.staticInit(); }',
+  $NODEFS__postset: 'if (ENVIRONMENT_IS_NODE) { NODEFS.staticInit(); }',
   $NODEFS: {
     isWindows: false,
     staticInit: () => {
       NODEFS.isWindows = !!process.platform.match(/^win/);
-      var flags = process["binding"]("constants");
+      var flags = process.binding("constants");
       // Node.js 4 compatibility: it has no namespaces for constants
       if (flags["fs"]) {
         flags = flags["fs"];
@@ -308,15 +308,8 @@ mergeInto(LibraryManager.library, {
         return { ptr: ptr, allocated: true };
       },
       msync: (stream, buffer, offset, length, mmapFlags) => {
-        if (!FS.isFile(stream.node.mode)) {
-          throw new FS.ErrnoError({{{ cDefine('ENODEV') }}});
-        }
-        if (mmapFlags & {{{ cDefine('MAP_PRIVATE') }}}) {
-          // MAP_PRIVATE calls need not to be synced back to underlying fs
-          return 0;
-        }
-
-        var bytesWritten = NODEFS.stream_ops.write(stream, buffer, 0, length, offset, false);
+        NODEFS.stream_ops.write(stream, buffer, 0, length, offset, false);
+        // should we check if bytesWritten and length are the same?
         return 0;
       }
     }

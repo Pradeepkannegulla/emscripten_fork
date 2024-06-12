@@ -3,6 +3,12 @@
     // libc
     // ===========================================
     {
+        "file": "pthread.h",
+        "defines": [
+          "PTHREAD_CANCELED"
+        ]
+    },
+    {
         "file": "dirent.h",
         "structs": {
             "dirent": [
@@ -97,7 +103,8 @@
             "AT_FDCWD",
             "AT_SYMLINK_NOFOLLOW",
             "AT_REMOVEDIR",
-            "AT_EMPTY_PATH"
+            "AT_EMPTY_PATH",
+            "AT_NO_AUTOMOUNT"
         ],
         "structs": {
             "flock": [
@@ -908,7 +915,6 @@
         "file": "emscripten/threading.h",
         "defines": [
             "EM_PROXIED_RESIZE_OFFSCREENCANVAS",
-            "EM_QUEUED_JS_CALL_MAX_ARGS",
             "EM_FUNC_SIG_V",
             "EM_FUNC_SIG_VI",
             "EM_FUNC_SIG_VII",
@@ -997,7 +1003,8 @@
                 "__attributes"
             ]
         },
-        "defines": ["EMSCRIPTEN_FETCH_LOAD_TO_MEMORY",
+        "defines": [
+            "EMSCRIPTEN_FETCH_LOAD_TO_MEMORY",
             "EMSCRIPTEN_FETCH_STREAM_DATA",
             "EMSCRIPTEN_FETCH_PERSIST_FILE",
             "EMSCRIPTEN_FETCH_APPEND",
@@ -1024,6 +1031,47 @@
                 "asyncify_data"
             ]
         }
+    },
+    {
+        "file": "emscripten/promise.h",
+        "defines": [
+            "EM_PROMISE_FULFILL",
+            "EM_PROMISE_MATCH",
+            "EM_PROMISE_MATCH_RELEASE",
+            "EM_PROMISE_REJECT"
+        ]
+    },
+    {
+        "file": "AL/al.h",
+        "defines": [
+          "AL_TRUE",
+          "AL_FALSE",
+          "AL_NONE",
+          "AL_NO_ERROR",
+          "AL_DOPPLER_FACTOR",
+          "AL_SPEED_OF_SOUND",
+          "AL_POSITION",
+          "AL_DIRECTION",
+          "AL_ORIENTATION",
+          "AL_VELOCITY",
+          "AL_GAIN",
+          "AL_DISTANCE_MODEL",
+          "AL_INVALID_ENUM",
+          "AL_INVALID_NAME",
+          "AL_INVALID_OPERATION",
+          "AL_INVALID_VALUE"
+        ]
+    },
+    {
+        "file": "AL/alc.h",
+        "defines": [
+          "ALC_TRUE",
+          "ALC_FALSE",
+          "ALC_NO_ERROR",
+          "ALC_INVALID_DEVICE",
+          "ALC_INVALID_VALUE",
+          "ALC_INVALID_ENUM"
+        ]
     },
     // ===========================================
     // WebGPU

@@ -194,25 +194,16 @@ var LibraryEmbind = {
   },
 
 
-  // from https://github.com/imvu/imvujs/blob/master/src/function.js
   $createNamedFunction__deps: ['$makeLegalFunctionName'],
   $createNamedFunction: function(name, body) {
     name = makeLegalFunctionName(name);
-#if DYNAMIC_EXECUTION == 0
-    return function() {
-      "use strict";
-      return body.apply(this, arguments);
-    };
-#else
-    /*jshint evil:true*/
-    return new Function(
-        "body",
-        "return function " + name + "() {\n" +
-        "    \"use strict\";" +
-        "    return body.apply(this, arguments);\n" +
-        "};\n"
-    )(body);
-#endif
+    // Use an abject with a computed property name to create a new function with
+    // a name specified at runtime, but without using `new Function` or `eval`.
+    return {
+      [name]: function() {
+        return body.apply(this, arguments);
+      }
+    }[name];
   },
 
   $embindRepr: function(v) {
@@ -615,7 +606,6 @@ var LibraryEmbind = {
 
     // maxRange comes through as -1 for uint64_t (see issue 13902). Work around that temporarily
     if (isUnsignedType) {
-      // Use string because acorn does recognize bigint literals
       maxRange = (1n << 64n) - 1n;
     }
 
@@ -907,7 +897,7 @@ var LibraryEmbind = {
       var heap = HEAPU32;
       var size = heap[handle]; // in elements
       var data = heap[handle + 1]; // byte offset into emscripten heap
-      return new TA(buffer, data, size);
+      return new TA(heap.buffer, data, size);
     }
 
     name = readLatin1String(name);
@@ -1663,7 +1653,7 @@ var LibraryEmbind = {
 #if MEMORY64
     ptr = bigintToI53Checked(ptr);
 #if ASSERTIONS
-    assert(ptr != NaN);
+    assert(Number.isSafeInteger(ptr));
 #endif
 #endif
 
@@ -1791,7 +1781,7 @@ var LibraryEmbind = {
         // This is more useful than the empty stacktrace of `FinalizationRegistry`
         // callback.
         var cls = $$.ptrType.registeredClass;
-        info.leakWarning = new Error("Embind found a leaked C++ instance " + cls.name + " <0x" + $$.ptr.toString(16) + ">.\n" +
+        info.leakWarning = new Error("Embind found a leaked C++ instance " + cls.name + " <" + ptrToString($$.ptr) + ">.\n" +
         "We'll free it automatically in this case, but this functionality is not reliable across various environments.\n" +
         "Make sure to invoke .delete() manually once you're done with the instance instead.\n" +
         "Originally allocated"); // `.stack` will add "at ..." after this sentence

@@ -1,9 +1,7 @@
-__cxa_allocate_exception
 __cxa_begin_catch
 __cxa_end_catch
 __cxa_find_matching_catch_2
 __cxa_find_matching_catch_3
-__cxa_free_exception
 __cxa_rethrow
 __cxa_throw
 __cxa_uncaught_exceptions
@@ -17,7 +15,6 @@ fd_close
 fd_read
 fd_seek
 fd_write
-getTempRet0
 invoke_diii
 invoke_fiii
 invoke_i
@@ -40,5 +37,4 @@ invoke_viiii
 invoke_viiiiiii
 invoke_viiiiiiiiii
 invoke_viiiiiiiiiiiiiii
-setTempRet0
 strftime_l

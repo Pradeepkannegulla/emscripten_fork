@@ -35,8 +35,7 @@ mergeInto(LibraryManager.library, {
 #endif
       return FS.lookupPath(parent.path + '/' + name).node;
     },
-    lookupPath: function(path, opts) {
-      opts = opts || {};
+    lookupPath: function(path, opts = {}) {
       if (opts.parent) {
         path = nodePath.dirname(path);
       }
@@ -189,12 +188,9 @@ mergeInto(LibraryManager.library, {
         // this stream is created by in-memory filesystem
         return VFS.msync(stream, buffer, offset, length, mmapFlags);
       }
-      if (mmapFlags & {{{ cDefine('MAP_PRIVATE') }}}) {
-        // MAP_PRIVATE calls need not to be synced back to underlying fs
-        return 0;
-      }
 
       FS.write(stream, buffer, 0, length, offset);
+      // should we check if bytesWritten and length are the same?
       return 0;
     },
     munmap: function() {

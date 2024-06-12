@@ -11,7 +11,7 @@ if __name__ == '__main__':
   raise Exception('do not run this file directly; do something like: test/runner.py interactive')
 
 from common import parameterized
-from common import BrowserCore, test_file
+from common import BrowserCore, test_file, also_with_minimal_runtime
 from tools.shared import WINDOWS
 from tools.utils import which
 
@@ -53,7 +53,7 @@ class interactive(BrowserCore):
     self.btest_exit('sdl_fullscreen_samecanvassize.c')
 
   def test_sdl2_togglefullscreen(self):
-    self.btest_exit('sdl_togglefullscreen.c', args=['-sUSE_SDL=2'])
+    self.btest_exit('browser/test_sdl_togglefullscreen.c', args=['-sUSE_SDL=2'])
 
   def test_sdl_audio(self):
     shutil.copyfile(test_file('sounds', 'alarmvictory_1.ogg'), self.in_dir('sound.ogg'))
@@ -106,7 +106,7 @@ class interactive(BrowserCore):
 
   def test_sdl2_mixer_wav(self):
     shutil.copyfile(test_file('sounds', 'the_entertainer.wav'), 'sound.wav')
-    self.btest_exit('sdl2_mixer_wav.c', args=[
+    self.btest_exit('browser/test_sdl2_mixer_wav.c', args=[
       '-O2',
       '-sUSE_SDL=2',
       '-sUSE_SDL_MIXER=2',
@@ -121,7 +121,7 @@ class interactive(BrowserCore):
   })
   def test_sdl2_mixer_music(self, formats, flags, music_name):
     shutil.copyfile(test_file('sounds', music_name), music_name)
-    self.btest('sdl2_mixer_music.c', expected='1', args=[
+    self.btest('browser/test_sdl2_mixer_music.c', expected='exit:0', args=[
       '-O2',
       '--minify=0',
       '--preload-file', music_name,
@@ -135,7 +135,8 @@ class interactive(BrowserCore):
 
   def test_sdl2_audio_beeps(self):
     # use closure to check for a possible bug with closure minifying away newer Audio() attributes
-    self.btest_exit(test_file('sdl2_audio_beep.cpp'), args=['-O2', '--closure=1', '--minify=0', '-sDISABLE_EXCEPTION_CATCHING=0', '-sUSE_SDL=2'])
+    # TODO: investigate why this does not pass
+    self.btest_exit(test_file('browser/test_sdl2_audio_beep.cpp'), args=['-O2', '--closure=1', '--minify=0', '-sDISABLE_EXCEPTION_CATCHING=0', '-sUSE_SDL=2'])
 
   def test_openal_playback(self):
     shutil.copyfile(test_file('sounds', 'audio.wav'), self.in_dir('audio.wav'))
@@ -255,3 +256,27 @@ class interactive(BrowserCore):
   def test_webgl_offscreen_canvas_in_two_pthreads(self):
     for args in [['-sOFFSCREENCANVAS_SUPPORT', '-DTEST_OFFSCREENCANVAS=1'], ['-sOFFSCREEN_FRAMEBUFFER']]:
       self.btest('gl_in_two_pthreads.cpp', expected='1', args=args + ['-sUSE_PTHREADS', '-lGL', '-sGL_DEBUG', '-sPROXY_TO_PTHREAD'])
+
+  # Tests creating a Web Audio context using Emscripten library_webaudio.js feature.
+  @also_with_minimal_runtime
+  def test_web_audio(self):
+    self.btest('webaudio/create_webaudio.c', expected='0', args=['-lwebaudio.js'])
+
+  # Tests simple AudioWorklet noise generation
+  @also_with_minimal_runtime
+  def test_audio_worklet(self):
+    self.btest('webaudio/audioworklet.c', expected='0', args=['-sAUDIO_WORKLET', '-sWASM_WORKERS', '--preload-file', test_file('hello_world.c') + '@/'])
+    self.btest('webaudio/audioworklet.c', expected='0', args=['-sAUDIO_WORKLET', '-sWASM_WORKERS', '-sUSE_PTHREADS'])
+
+  # Tests AudioWorklet with emscripten_futex_wake().
+  @also_with_minimal_runtime
+  def test_audio_worklet_emscripten_futex_wake(self):
+    self.btest('webaudio/audioworklet_emscripten_futex_wake.cpp', expected='0', args=['-sAUDIO_WORKLET', '-sWASM_WORKERS', '-sUSE_PTHREADS', '-sPTHREAD_POOL_SIZE=2'])
+
+  # Tests a second AudioWorklet example: sine wave tone generator.
+  def test_audio_worklet_tone_generator(self):
+    self.btest('webaudio/tone_generator.c', expected='0', args=['-sAUDIO_WORKLET', '-sWASM_WORKERS'])
+
+  # Tests that AUDIO_WORKLET+MINIMAL_RUNTIME+MODULARIZE combination works together.
+  def test_audio_worklet_modularize(self):
+    self.btest('webaudio/audioworklet.c', expected='0', args=['-sAUDIO_WORKLET', '-sWASM_WORKERS', '-sMINIMAL_RUNTIME', '-sMODULARIZE'])

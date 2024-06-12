@@ -9,10 +9,15 @@
 {{{ throw "this file should not be be included when IMPORTED_MEMORY is set"; }}}
 #endif
 
+{{{ makeModuleReceiveWithVar('INITIAL_MEMORY', undefined, INITIAL_MEMORY) }}}
+
+assert(INITIAL_MEMORY >= {{{STACK_SIZE}}}, 'INITIAL_MEMORY should be larger than STACK_SIZE, was ' + INITIAL_MEMORY + '! (STACK_SIZE=' + {{{STACK_SIZE}}} + ')');
+
+// check for full engine support (use string 'subarray' to avoid closure compiler confusion)
+
 #if USE_PTHREADS
 if (ENVIRONMENT_IS_PTHREAD) {
   wasmMemory = Module['wasmMemory'];
-  buffer = Module['buffer'];
 } else {
 #endif // USE_PTHREADS
 
@@ -43,7 +48,7 @@ if (ENVIRONMENT_IS_PTHREAD) {
     if (!(wasmMemory.buffer instanceof SharedArrayBuffer)) {
       err('requested a shared WebAssembly.Memory but the returned buffer is not a SharedArrayBuffer, indicating that while the browser has SharedArrayBuffer it does not have WebAssembly threads support - you may need to set a flag');
       if (ENVIRONMENT_IS_NODE) {
-        console.log('(on node you may need: --experimental-wasm-threads --experimental-wasm-bulk-memory and also use a recent version)');
+        err('(on node you may need: --experimental-wasm-threads --experimental-wasm-bulk-memory and/or recent version)');
       }
       throw Error('bad memory');
     }
@@ -54,14 +59,11 @@ if (ENVIRONMENT_IS_PTHREAD) {
 }
 #endif
 
-if (wasmMemory) {
-  buffer = wasmMemory.buffer;
-}
+updateMemoryViews();
 
 // If the user provides an incorrect length, just use that length instead rather than providing the user to
 // specifically provide the memory length with Module['INITIAL_MEMORY'].
-INITIAL_MEMORY = buffer.byteLength;
+INITIAL_MEMORY = wasmMemory.buffer.byteLength;
 #if ASSERTIONS
 assert(INITIAL_MEMORY % {{{ WASM_PAGE_SIZE }}} === 0);
 #endif
-updateGlobalBufferAndViews(buffer);

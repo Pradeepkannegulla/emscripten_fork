@@ -18,6 +18,7 @@ import sys
 import time
 from contextlib import contextmanager
 
+from tools import cache
 from tools import shared
 from tools import system_libs
 from tools import ports
@@ -28,6 +29,7 @@ import emscripten
 # Minimal subset of targets used by CI systems to build enough to useful
 MINIMAL_TASKS = [
     'libcompiler_rt',
+    'libcompiler_rt-wasm-sjlj',
     'libc',
     'libc-debug',
     'libc_optz',
@@ -35,6 +37,9 @@ MINIMAL_TASKS = [
     'libc++abi',
     'libc++abi-except',
     'libc++abi-noexcept',
+    'libc++abi-debug',
+    'libc++abi-debug-except',
+    'libc++abi-debug-noexcept',
     'libc++',
     'libc++-except',
     'libc++-noexcept',
@@ -69,13 +74,14 @@ MINIMAL_TASKS = [
 # CI (which has slightly more tests than other modes that want to use MINIMAL)
 MINIMAL_PIC_TASKS = MINIMAL_TASKS + [
     'libcompiler_rt-mt',
-    'libcompiler_rt-wasm-sjlj',
     'libc-mt',
     'libc-mt-debug',
     'libc_optz-mt',
     'libc_optz-mt-debug',
     'libc++abi-mt',
     'libc++abi-mt-noexcept',
+    'libc++abi-debug-mt',
+    'libc++abi-debug-mt-noexcept',
     'libc++-mt',
     'libc++-mt-noexcept',
     'libdlmalloc-mt',
@@ -90,25 +96,10 @@ MINIMAL_PIC_TASKS = MINIMAL_TASKS + [
     'libwebgpu_cpp',
     'libfetch',
     'libwasmfs',
+    'giflib',
 ]
 
-# Variant builds that we want to support for certain ports
-# TODO: It would be nice if the ports themselves could specify the variants that they
-# support.
-PORT_VARIANTS = {
-    'regal-mt': ('regal', {'USE_PTHREADS': 1}),
-    'harfbuzz-mt': ('harfbuzz', {'USE_PTHREADS': 1}),
-    'sdl2-mt': ('sdl2', {'USE_PTHREADS': 1}),
-    'icu-mt': ('icu', {'USE_PTHREADS': 1}),
-    'sdl2_mixer_mp3': ('sdl2_mixer', {'SDL2_MIXER_FORMATS': ["mp3"]}),
-    'sdl2_mixer_none': ('sdl2_mixer', {'SDL2_MIXER_FORMATS': []}),
-    'sdl2_image_png': ('sdl2_image', {'SDL2_IMAGE_FORMATS': ["png"]}),
-    'sdl2_image_jpg': ('sdl2_image', {'SDL2_IMAGE_FORMATS': ["jpg"]}),
-    'libpng-mt': ('libpng', {'USE_PTHREADS': 1}),
-    'sqlite3-mt': ('sqlite3', {'USE_PTHREADS': 1}),
-}
-
-PORTS = sorted(list(ports.ports_by_name.keys()) + list(PORT_VARIANTS.keys()))
+PORTS = sorted(list(ports.ports_by_name.keys()) + list(ports.port_variants.keys()))
 
 temp_files = shared.get_temp_files()
 logger = logging.getLogger('embuilder')
@@ -131,8 +122,8 @@ Issuing 'embuilder build ALL' causes each task to be built.
 
 @contextmanager
 def get_port_variant(name):
-  if name in PORT_VARIANTS:
-    name, extra_settings = PORT_VARIANTS[name]
+  if name in ports.port_variants:
+    name, extra_settings = ports.port_variants[name]
     old_settings = settings.dict().copy()
     for key, value in extra_settings.items():
       setattr(settings, key, value)
@@ -253,10 +244,10 @@ def main():
       if do_clear:
         library.erase()
       if do_build:
-        library.get_path()
+        library.build(deterministic_paths=True)
     elif what == 'sysroot':
       if do_clear:
-        shared.Cache.erase_file('sysroot_install.stamp')
+        cache.erase_file('sysroot_install.stamp')
       if do_build:
         system_libs.ensure_sysroot()
     elif what == 'struct_info':

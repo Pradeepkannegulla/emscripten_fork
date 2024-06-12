@@ -346,7 +346,6 @@ var LibrarySDL = {
     },
 
     makeSurface: function(width, height, flags, usePageCanvas, source, rmask, gmask, bmask, amask) {
-      flags = flags || 0;
       var is_SDL_HWSURFACE = flags & 0x00000001;
       var is_SDL_HWPALETTE = flags & 0x00200000;
       var is_SDL_OPENGL = flags & 0x04000000;
@@ -2263,13 +2262,13 @@ var LibrarySDL = {
         }
       }
       var callStbImage = function(func, params) {
-        var x = Module['_malloc']({{{ getNativeTypeSize('i32') }}});
-        var y = Module['_malloc']({{{ getNativeTypeSize('i32') }}});
-        var comp = Module['_malloc']({{{ getNativeTypeSize('i32') }}});
+        var x = _malloc({{{ getNativeTypeSize('i32') }}});
+        var y = _malloc({{{ getNativeTypeSize('i32') }}});
+        var comp = _malloc({{{ getNativeTypeSize('i32') }}});
         addCleanup(function() {
-          Module['_free'](x);
-          Module['_free'](y);
-          Module['_free'](comp);
+          _free(x);
+          _free(y);
+          _free(comp);
           if (data) Module['_stbi_image_free'](data);
         });
         var data = Module['_' + func].apply(null, params.concat([x, y, comp, 0]));
@@ -2308,10 +2307,10 @@ var LibrarySDL = {
           if (raw === null) err('Trying to reuse preloaded image, but freePreloadedMediaOnUse is set!');
 #if STB_IMAGE
           var lengthBytes = lengthBytesUTF8(filename)+1;
-          var name = Module['_malloc'](lengthBytes);
+          var name = _malloc(lengthBytes);
           stringToUTF8(filename, name, lengthBytes);
           addCleanup(function() {
-            Module['_free'](name);
+            _free(name);
           });
           raw = callStbImage('stbi_load', [name]);
           if (!raw) return 0;
@@ -2766,7 +2765,7 @@ var LibrarySDL = {
     return 1;
   },
 
-  Mix_LoadWAV_RW__deps: ['$PATH_FS'],
+  Mix_LoadWAV_RW__deps: ['$PATH_FS', 'fileno'],
   Mix_LoadWAV_RW__proxy: 'sync',
   Mix_LoadWAV_RW__sig: 'iii',
   Mix_LoadWAV_RW__docs: '/** @param {number|boolean=} freesrc */',
@@ -2779,7 +2778,7 @@ var LibrarySDL = {
 
       if (type === 2/*SDL_RWOPS_STDFILE*/) {
         var fp = {{{ makeGetValue('rwopsID + ' + 28 /*hidden.stdio.fp*/, '0', 'i32') }}};
-        var fd = Module['_fileno'](fp);
+        var fd = _fileno(fp);
         var stream = FS.getStream(fd);
         if (stream) {
           rwops = { filename: stream.path };
@@ -3711,7 +3710,9 @@ var LibrarySDL = {
   SDL_GetCurrentAudioDriver: function() {
     return allocateUTF8('Emscripten Audio');
   },
-
+  SDL_GetScancodeFromKey: function (key) {
+    return SDL.scanCodes[key]; 
+  },
   SDL_GetAudioDriver__deps: ['SDL_GetCurrentAudioDriver'],
   SDL_GetAudioDriver: function(index) { return _SDL_GetCurrentAudioDriver() },
 
@@ -3724,16 +3725,17 @@ var LibrarySDL = {
   },
 
   SDL_AddTimer__proxy: 'sync',
+  SDL_AddTimer__deps: ['$safeSetTimeout'],
   SDL_AddTimer__sig: 'iiii',
   SDL_AddTimer: function(interval, callback, param) {
-    return window.setTimeout(function() {
-      {{{ makeDynCall('iii', 'callback') }}}(interval, param);
-    }, interval);
+    return safeSetTimeout(
+      () => {{{ makeDynCall('iii', 'callback') }}}(interval, param),
+      interval);
   },
   SDL_RemoveTimer__proxy: 'sync',
   SDL_RemoveTimer__sig: 'ii',
   SDL_RemoveTimer: function(id) {
-    window.clearTimeout(id);
+    clearTimeout(id);
     return true;
   },
 

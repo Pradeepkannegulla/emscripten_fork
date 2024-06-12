@@ -3,7 +3,6 @@
  * Copyright 2010 The Emscripten Authors
  * SPDX-License-Identifier: MIT
  */
-
 #if STRICT_JS
 "use strict";
 
@@ -35,25 +34,28 @@ var /** @type {{
 }}
  */ Module;
 if (!Module) /** @suppress{checkTypes}*/Module = {"__EMSCRIPTEN_PRIVATE_MODULE_EXPORT_NAME_SUBSTITUTION__":1};
+#elif AUDIO_WORKLET
+var Module = globalThis.Module || (typeof {{{ EXPORT_NAME }}} != 'undefined' ? {{{ EXPORT_NAME }}} : {});
 #else
 var Module = typeof {{{ EXPORT_NAME }}} != 'undefined' ? {{{ EXPORT_NAME }}} : {};
 #endif // USE_CLOSURE_COMPILER
 
 #if POLYFILL
-#if ((MAYBE_WASM2JS && WASM != 2) || MODULARIZE) && (MIN_CHROME_VERSION < 33 || MIN_EDGE_VERSION < 12 || MIN_FIREFOX_VERSION < 29 || MIN_IE_VERSION != TARGET_NOT_SUPPORTED || MIN_SAFARI_VERSION < 80000) // https://caniuse.com/#feat=promises
+#if ((MAYBE_WASM2JS && WASM != 2) || MODULARIZE) && (MIN_CHROME_VERSION < 33 || MIN_EDGE_VERSION < 12 || MIN_FIREFOX_VERSION < 29 || MIN_IE_VERSION != TARGET_NOT_SUPPORTED || MIN_SAFARI_VERSION < 80000)
 // Include a Promise polyfill for legacy browsers. This is needed either for
 // wasm2js, where we polyfill the wasm API which needs Promises, or when using
 // modularize which creates a Promise for when the module is ready.
+// See https://caniuse.com/#feat=promises
 #include "polyfill/promise.js"
 #endif
 
-// See https://caniuse.com/mdn-javascript_builtins_object_assign
 #if MIN_CHROME_VERSION < 45 || MIN_EDGE_VERSION < 12 || MIN_FIREFOX_VERSION < 34 || MIN_IE_VERSION != TARGET_NOT_SUPPORTED || MIN_SAFARI_VERSION < 90000
+// See https://caniuse.com/mdn-javascript_builtins_object_assign
 #include "polyfill/objassign.js"
 #endif
 
-// See https://caniuse.com/mdn-javascript_builtins_bigint64array
 #if WASM_BIGINT && MIN_SAFARI_VERSION < 150000
+// See https://caniuse.com/mdn-javascript_builtins_bigint64array
 #include "polyfill/bigint64array.js"
 #endif
 #endif // POLYFILL
@@ -72,7 +74,7 @@ Module['ready'] = new Promise(function(resolve, reject) {
 
 // --pre-jses are emitted after the Module integration code, so that they can
 // refer to Module (if they choose; they can also define Module)
-// {{PRE_JSES}}
+{{{ preJS() }}}
 
 // Sometimes an existing Module object exists with properties
 // meant to overwrite the default module functionality. Here
@@ -89,6 +91,10 @@ var quit_ = (status, toThrow) => {
 
 // Determine the runtime environment we are in. You can customize this by
 // setting the ENVIRONMENT setting at compile time (see settings.js).
+
+#if AUDIO_WORKLET
+var ENVIRONMENT_IS_AUDIO_WORKLET = typeof AudioWorkletGlobalScope !== 'undefined';
+#endif
 
 #if ENVIRONMENT && !ENVIRONMENT.includes(',')
 var ENVIRONMENT_IS_WEB = {{{ ENVIRONMENT === 'web' }}};
@@ -107,7 +113,11 @@ var ENVIRONMENT_IS_WORKER = typeof importScripts == 'function';
 // N.b. Electron.js environment is simultaneously a NODE-environment, but
 // also a web environment.
 var ENVIRONMENT_IS_NODE = typeof process == 'object' && typeof process.versions == 'object' && typeof process.versions.node == 'string';
+#if AUDIO_WORKLET
+var ENVIRONMENT_IS_SHELL = !ENVIRONMENT_IS_WEB && !ENVIRONMENT_IS_NODE && !ENVIRONMENT_IS_WORKER && !ENVIRONMENT_IS_AUDIO_WORKLET;
+#else
 var ENVIRONMENT_IS_SHELL = !ENVIRONMENT_IS_WEB && !ENVIRONMENT_IS_NODE && !ENVIRONMENT_IS_WORKER;
+#endif
 #endif // ENVIRONMENT
 
 #if ASSERTIONS
@@ -133,9 +143,6 @@ var ENVIRONMENT_IS_WASM_WORKER = Module['$ww'];
 #if SHARED_MEMORY && !MODULARIZE
 // In MODULARIZE mode _scriptDir needs to be captured already at the very top of the page immediately when the page is parsed, so it is generated there
 // before the page load. In non-MODULARIZE modes generate it here.
-#if EXPORT_ES6
-var _scriptDir = import.meta.url;
-#else
 var _scriptDir = (typeof document != 'undefined' && document.currentScript) ? document.currentScript.src : undefined;
 
 if (ENVIRONMENT_IS_WORKER) {
@@ -146,8 +153,7 @@ else if (ENVIRONMENT_IS_NODE) {
   _scriptDir = __filename;
 }
 #endif // ENVIRONMENT_MAY_BE_NODE
-#endif
-#endif
+#endif // SHARED_MEMORY && !MODULARIZE
 
 // `/` should be present at the end if `scriptDirectory` is not empty
 var scriptDirectory = '';
@@ -177,39 +183,52 @@ var read_,
 function logExceptionOnExit(e) {
   if (e instanceof ExitStatus) return;
   let toLog = e;
-#if ASSERTIONS
   if (e && typeof e == 'object' && e.stack) {
     toLog = [e, e.stack];
   }
-#endif
   err('exiting due to exception: ' + toLog);
 }
 #endif
 
 #if ENVIRONMENT_MAY_BE_NODE
-var fs;
-var nodePath;
-var requireNodeFS;
-
 if (ENVIRONMENT_IS_NODE) {
-#if ENVIRONMENT
-#if ASSERTIONS
-  if (!(typeof process == 'object' && typeof require == 'function')) throw new Error('not compiled for this environment (did you build to HTML and try to run it not on the web, or set ENVIRONMENT to something - like node - and run it someplace else - like on the web?)');
+#if ENVIRONMENT && ASSERTIONS
+  if (typeof process == 'undefined' || !process.release || process.release.name !== 'node') throw new Error('not compiled for this environment (did you build to HTML and try to run it not on the web, or set ENVIRONMENT to something - like node - and run it someplace else - like on the web?)');
 #endif
+  // `require()` is no-op in an ESM module, use `createRequire()` to construct
+  // the require()` function.  This is only necessary for multi-environment
+  // builds, `-sENVIRONMENT=node` emits a static import declaration instead.
+  // TODO: Swap all `require()`'s with `import()`'s?
+#if EXPORT_ES6 && ENVIRONMENT_MAY_BE_WEB
+  const { createRequire } = await import('module');
+  /** @suppress{duplicate} */
+  var require = createRequire(import.meta.url);
 #endif
+  // These modules will usually be used on Node.js. Load them eagerly to avoid
+  // the complexity of lazy-loading.
+  var fs = require('fs');
+  var nodePath = require('path');
+
   if (ENVIRONMENT_IS_WORKER) {
-    scriptDirectory = require('path').dirname(scriptDirectory) + '/';
+    scriptDirectory = nodePath.dirname(scriptDirectory) + '/';
   } else {
+#if EXPORT_ES6
+    // EXPORT_ES6 + ENVIRONMENT_IS_NODE always requires use of import.meta.url,
+    // since there's no way getting the current absolute path of the module when
+    // support for that is not available.
+    scriptDirectory = require('url').fileURLToPath(new URL('./', import.meta.url)); // includes trailing slash
+#else
     scriptDirectory = __dirname + '/';
+#endif
   }
 
 #include "node_shell_read.js"
 
-  if (process['argv'].length > 1) {
-    thisProgram = process['argv'][1].replace(/\\/g, '/');
+  if (process.argv.length > 1) {
+    thisProgram = process.argv[1].replace(/\\/g, '/');
   }
 
-  arguments_ = process['argv'].slice(2);
+  arguments_ = process.argv.slice(2);
 
 #if MODULARIZE
   // MODULARIZE will export the module in the proper place outside, we don't need to export here
@@ -220,7 +239,7 @@ if (ENVIRONMENT_IS_NODE) {
 #endif
 
 #if NODEJS_CATCH_EXIT
-  process['on']('uncaughtException', function(ex) {
+  process.on('uncaughtException', function(ex) {
     // suppress ExitStatus exceptions from showing an error
     if (!(ex instanceof ExitStatus)) {
       throw ex;
@@ -234,16 +253,19 @@ if (ENVIRONMENT_IS_NODE) {
   // not be needed with node v15 and about because it is now the default
   // behaviour:
   // See https://nodejs.org/api/cli.html#cli_unhandled_rejections_mode
-  process['on']('unhandledRejection', function(reason) { throw reason; });
+  var nodeMajor = process.versions.node.split(".")[0];
+  if (nodeMajor < 15) {
+    process.on('unhandledRejection', function(reason) { throw reason; });
+  }
 #endif
 
   quit_ = (status, toThrow) => {
     if (keepRuntimeAlive()) {
-      process['exitCode'] = status;
+      process.exitCode = status;
       throw toThrow;
     }
     logExceptionOnExit(toThrow);
-    process['exit'](status);
+    process.exit(status);
   };
 
   Module['inspect'] = function () { return '[Emscripten Module object]'; };
@@ -262,7 +284,6 @@ if (ENVIRONMENT_IS_NODE) {
 #if WASM == 2
   // If target shell does not support Wasm, load the JS version of the code.
   if (typeof WebAssembly == 'undefined') {
-    requireNodeFS();
     eval(fs.readFileSync(locateFile('{{{ TARGET_BASENAME }}}.wasm.js'))+'');
   }
 #endif
@@ -272,10 +293,8 @@ if (ENVIRONMENT_IS_NODE) {
 #if ENVIRONMENT_MAY_BE_SHELL || ASSERTIONS
 if (ENVIRONMENT_IS_SHELL) {
 
-#if ENVIRONMENT
-#if ASSERTIONS
+#if ENVIRONMENT && ASSERTIONS
   if ((typeof process == 'object' && typeof require === 'function') || typeof window == 'object' || typeof importScripts == 'function') throw new Error('not compiled for this environment (did you build to HTML and try to run it not on the web, or set ENVIRONMENT to something - like node - and run it someplace else - like on the web?)');
-#endif
 #endif
 
   if (typeof read != 'undefined') {
@@ -309,6 +328,10 @@ if (ENVIRONMENT_IS_SHELL) {
   readAsync = function readAsync(f, onload, onerror) {
     setTimeout(() => onload(readBinary(f)), 0);
   };
+
+  if (typeof clearTimeout == 'undefined') {
+    globalThis.clearTimeout = (id) => {};
+  }
 
   if (typeof scriptArgs != 'undefined') {
     arguments_ = scriptArgs;
@@ -385,10 +408,8 @@ if (ENVIRONMENT_IS_WEB || ENVIRONMENT_IS_WORKER) {
     scriptDirectory = '';
   }
 
-#if ENVIRONMENT
-#if ASSERTIONS
+#if ENVIRONMENT && ASSERTIONS
   if (!(typeof window == 'object' || typeof importScripts == 'function')) throw new Error('not compiled for this environment (did you build to HTML and try to run it not on the web, or set ENVIRONMENT to something - like node - and run it someplace else - like on the web?)');
-#endif
 #endif
 
   // Differentiate the Web Worker from the Node Worker case, as reading must
@@ -403,6 +424,9 @@ if (ENVIRONMENT_IS_WEB || ENVIRONMENT_IS_WORKER) {
   setWindowTitle = (title) => document.title = title;
 } else
 #endif // ENVIRONMENT_MAY_BE_WEB || ENVIRONMENT_MAY_BE_WORKER
+#if AUDIO_WORKLET && ASSERTIONS
+if (!ENVIRONMENT_IS_AUDIO_WORKLET)
+#endif
 {
 #if ASSERTIONS
   throw new Error('environment detection error');
@@ -427,7 +451,6 @@ if (ENVIRONMENT_IS_NODE) {
 var defaultPrint = console.log.bind(console);
 var defaultPrintErr = console.warn.bind(console);
 if (ENVIRONMENT_IS_NODE) {
-  requireNodeFS();
   defaultPrint = (str) => fs.writeSync(1, str + '\n');
   defaultPrintErr = (str) => fs.writeSync(2, str + '\n');
 }
@@ -479,7 +502,12 @@ assert(typeof Module['TOTAL_MEMORY'] == 'undefined', 'Module.TOTAL_MEMORY has be
 #endif
 
 #if USE_PTHREADS
-assert(ENVIRONMENT_IS_WEB || ENVIRONMENT_IS_WORKER || ENVIRONMENT_IS_NODE, 'Pthreads do not work in this environment yet (need Web Workers, or an alternative to them)');
+assert(
+#if AUDIO_WORKLET
+  ENVIRONMENT_IS_AUDIO_WORKLET ||
+#endif
+  ENVIRONMENT_IS_WEB || ENVIRONMENT_IS_WORKER || ENVIRONMENT_IS_NODE, 'Pthreads do not work in this environment yet (need Web Workers, or an alternative to them)');
+#else
 #endif // USE_PTHREADS
 
 #if !ENVIRONMENT_MAY_BE_WEB
@@ -499,5 +527,3 @@ assert(!ENVIRONMENT_IS_SHELL, "shell environment detected but not enabled at bui
 #endif
 
 #endif // ASSERTIONS
-
-{{BODY}}

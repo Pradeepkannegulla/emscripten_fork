@@ -250,6 +250,7 @@ def load_test_suites(args, modules):
   error_on_legacy_suite_names(args)
   unmatched_test_names = set(args)
   suites = []
+  total_tests = 0
   for m in modules:
     names_in_module = []
     for name in list(unmatched_test_names):
@@ -262,10 +263,13 @@ def load_test_suites(args, modules):
     if len(names_in_module):
       loaded_tests = loader.loadTestsFromNames(sorted(names_in_module), m)
       tests = flattened_tests(loaded_tests)
+      total_tests += len(tests)
       suite = suite_for_module(m, tests)
       for test in tests:
         suite.addTest(test)
       suites.append((m.__name__, suite))
+  if total_tests == 1:
+    common.EMTEST_SAVE_DIR = True
   return suites, unmatched_test_names
 
 
@@ -294,7 +298,18 @@ def run_tests(options, suites):
   print('Test suites:')
   print([s[0] for s in suites])
   # Run the discovered tests
-  testRunner = unittest.TextTestRunner(verbosity=2, failfast=options.failfast)
+
+  if os.getenv('CI'):
+    os.makedirs('out', exist_ok=True)
+    # output fd must remain open until after testRunner.run() below
+    output = open('out/test-results.xml', 'wb')
+    import xmlrunner # type: ignore
+    testRunner = xmlrunner.XMLTestRunner(output=output, verbosity=2,
+                                         failfast=options.failfast)
+    print('Writing XML test output to ' + os.path.abspath(output.name))
+  else:
+    testRunner = unittest.TextTestRunner(verbosity=2, failfast=options.failfast)
+
   for mod_name, suite in suites:
     print('Running %s: (%s tests)' % (mod_name, suite.countTestCases()))
     res = testRunner.run(suite)
@@ -317,7 +332,7 @@ def parse_args(args):
   parser = argparse.ArgumentParser(prog='runner.py', description=__doc__)
   parser.add_argument('--save-dir', action='store_true', default=None,
                       help='Save the temporary directory used during for each '
-                           'test.  Implies --cores=1.')
+                           'test.  Implies --cores=1.  Defaults to true when running a single test')
   parser.add_argument('--no-clean', action='store_true',
                       help='Do not clean the temporary directory before each test run')
   parser.add_argument('--verbose', '-v', action='store_true', default=None)
@@ -355,6 +370,10 @@ def configure():
   assert 'PARALLEL_SUITE_EMCC_CORES' not in os.environ, 'use EMTEST_CORES rather than PARALLEL_SUITE_EMCC_CORES'
   parallel_testsuite.NUM_CORES = os.environ.get('EMTEST_CORES') or os.environ.get('EMCC_CORES')
 
+
+def main(args):
+  options = parse_args(args)
+
   # Some options make sense being set in the environment, others not-so-much.
   # TODO(sbc): eventually just make these command-line only.
   if os.getenv('EMTEST_SAVE_DIR'):
@@ -363,10 +382,6 @@ def configure():
     print('Prefer --rebaseline over setting $EMTEST_REBASELINE')
   if os.getenv('EMTEST_VERBOSE'):
     print('Prefer --verbose over setting $EMTEST_VERBOSE')
-
-
-def main(args):
-  options = parse_args(args)
 
   # We set the environments variables here and then call configure,
   # to apply them.  This means the python's multiprocessing child
@@ -385,7 +400,6 @@ def main(args):
 
   set_env('EMTEST_BROWSER', options.browser)
   set_env('EMTEST_DETECT_TEMPFILE_LEAKS', options.detect_leaks)
-  set_env('EMTEST_SAVE_DIR', options.save_dir)
   if options.no_clean:
     set_env('EMTEST_SAVE_DIR', 2)
   else:

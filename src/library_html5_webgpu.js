@@ -1,4 +1,4 @@
-{{{ (function() {
+{{{
   // Helper functions for code generation
   global.html5_gpu = {
     makeImportExport: function(snake_case, CamelCase) {
@@ -17,8 +17,8 @@
       return s;
     },
   };
-  return null;
-})(); }}}
+  null;
+}}}
 
 
 var LibraryHTML5WebGPU = {
@@ -60,9 +60,13 @@ var LibraryHTML5WebGPU = {
 #if ASSERTIONS
     assert(Module['preinitializedWebGPUDevice']);
 #endif
-    var device = Module['preinitializedWebGPUDevice'];
-    var deviceWrapper = { queueId: WebGPU.mgrQueue.create(device["queue"]) };
-    return WebGPU.mgrDevice.create(device, deviceWrapper);
+    if (WebGPU.preinitializedDeviceId === undefined) {
+      var device = Module['preinitializedWebGPUDevice'];
+      var deviceWrapper = { queueId: WebGPU.mgrQueue.create(device["queue"]) };
+      WebGPU.preinitializedDeviceId = WebGPU.mgrDevice.create(device, deviceWrapper);
+    }
+    WebGPU.mgrDevice.reference(WebGPU.preinitializedDeviceId);
+    return WebGPU.preinitializedDeviceId;
   },
 };
 

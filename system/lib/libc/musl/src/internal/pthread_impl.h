@@ -26,8 +26,7 @@ struct pthread {
 #ifndef TLS_ABOVE_TP
 	uintptr_t *dtv;
 #endif
-	// TODO(sbc): Implement circular list of threads
-	//struct pthread *prev, *next; /* non-ABI */
+	struct pthread *prev, *next; /* non-ABI */
 	uintptr_t sysinfo;
 #ifndef TLS_ABOVE_TP
 #ifdef CANARY_PAD
@@ -79,6 +78,9 @@ struct pthread {
 	// The TLS base to use the main module TLS data.  Secondary modules
 	// still require dynamic allocation.
 	void* tls_base;
+#endif
+#if _REENTRANT
+	_Atomic char sleeping;
 #endif
 };
 

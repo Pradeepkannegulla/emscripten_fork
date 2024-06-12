@@ -15,12 +15,18 @@
 #include <threads.h>
 #include <unistd.h>
 #include <emscripten/heap.h>
+#include <emscripten/threading.h>
 
 #define STACK_ALIGN 16
 #define TSD_ALIGN (sizeof(void*))
 
 // Comment this line to enable tracing of thread creation and destruction:
 // #define PTHREAD_DEBUG
+#ifdef PTHREAD_DEBUG
+#define dbg(fmt, ...) _emscripten_dbgf(fmt, ##__VA_ARGS__)
+#else
+#define dbg(fmt, ...)
+#endif
 
 // See musl's pthread_create.c
 
@@ -67,6 +73,40 @@ static int dummy_getpid(void) {
   return 42;
 }
 weak_alias(dummy_getpid, __syscall_getpid);
+
+static int tl_lock_count;
+static int tl_lock_waiters;
+
+volatile int __thread_list_lock;
+
+void __tl_lock(void) {
+  int tid = __pthread_self()->tid;
+  int val = __thread_list_lock;
+  if (val == tid) {
+    tl_lock_count++;
+    return;
+  }
+  while ((val = a_cas(&__thread_list_lock, 0, tid)))
+    __wait(&__thread_list_lock, &tl_lock_waiters, val, 0);
+}
+
+void __tl_unlock(void) {
+  if (tl_lock_count) {
+    tl_lock_count--;
+    return;
+  }
+  a_store(&__thread_list_lock, 0);
+  if (tl_lock_waiters) __wake(&__thread_list_lock, 1, 0);
+}
+
+void __tl_sync(pthread_t td)
+{
+	a_barrier();
+	int val = __thread_list_lock;
+	if (!val) return;
+	__wait(&__thread_list_lock, &tl_lock_waiters, val, 0);
+	if (tl_lock_waiters) __wake(&__thread_list_lock, 1, 0);
+}
 
 /* pthread_key_create.c overrides this */
 static volatile size_t dummy = 0;
@@ -184,10 +224,24 @@ int __pthread_create(pthread_t* restrict res,
 #endif
 
   struct pthread *self = __pthread_self();
-#ifdef PTHREAD_DEBUG
-  _emscripten_errf("start __pthread_create: self=%p new=%p new_end=%p stack=%p->%p stack_size=%zu tls_base=%p",
-                   self, new, new+1, (char*)new->stack - new->stack_size, new->stack, new->stack_size, new->tls_base);
-#endif
+  dbg("start __pthread_create: new=%p new_end=%p stack=%p->%p "
+      "stack_size=%zu tls_base=%p",
+      new,
+      new + 1,
+      (char*)new->stack - new->stack_size,
+      new->stack,
+      new->stack_size,
+      new->tls_base);
+
+  // thread may already be running/exited after the _pthread_create_js call below
+  __tl_lock();
+
+  new->next = self->next;
+  new->prev = self;
+  new->next->prev = new;
+  new->prev->next = new;
+
+  __tl_unlock();
 
   // Set libc.need_locks before calling __pthread_create_js since
   // by the time it returns the thread could be running and we
@@ -197,24 +251,23 @@ int __pthread_create(pthread_t* restrict res,
   int rtn = __pthread_create_js(new, &attr, entry, arg);
   if (rtn != 0) {
     if (!--libc.threads_minus_1) libc.need_locks = 0;
+
+    // undo previous addition to the thread list
+    __tl_lock();
+
+    new->next->prev = new->prev;
+    new->prev->next = new->next;
+    new->next = new->prev = new;
+
+    __tl_unlock();
+
     return rtn;
   }
 
-  // TODO(sbc): Implement circular list of threads
-  /*
-  __tl_lock();
-
-  new->next = self->next;
-  new->prev = self;
-  new->next->prev = new;
-  new->prev->next = new;
-
-  __tl_unlock();
-  */
-
-#ifdef PTHREAD_DEBUG
-  _emscripten_errf("done __pthread_create self=%p next=%p prev=%p new=%p", self, self->next, self->prev, new);
-#endif
+  dbg("done __pthread_create next=%p prev=%p new=%p",
+      self->next,
+      self->prev,
+      new);
   *res = new;
   return 0;
 }
@@ -236,9 +289,7 @@ void _emscripten_thread_free_data(pthread_t t) {
   // musl normally allocates this using mmap).  This region
   // includes the pthread structure itself.
   unsigned char* block = t->map_base;
-#ifdef PTHREAD_DEBUG
-  _emscripten_errf("_emscripten_thread_free_data thread=%p map_base=%p", t, block);
-#endif
+  dbg("_emscripten_thread_free_data thread=%p map_base=%p", t, block);
   // To aid in debugging, set the entire region to zero.
   memset(block, 0, sizeof(struct pthread));
   emscripten_builtin_free(block);
@@ -260,8 +311,6 @@ void _emscripten_thread_exit(void* result) {
 
   if (!--libc.threads_minus_1) libc.need_locks = 0;
 
-  // TODO(sbc): Implement circular list of threads
-  /*
   __tl_lock();
 
   self->next->prev = self->prev;
@@ -269,7 +318,6 @@ void _emscripten_thread_exit(void* result) {
   self->prev = self->next = self;
 
   __tl_unlock();
-  */
 
   if (self == emscripten_main_browser_thread_id()) {
     exit(0);
@@ -289,6 +337,10 @@ void _emscripten_thread_exit(void* result) {
     // Mark the thread as no longer running, so it can be joined.
     // Once we publish this, any threads that are waiting to join with us can
     // proceed and this worker can be recycled and used on another thread.
+#ifdef __PIC__
+    // When dynamic linking is enabled we need to keep track of zombie threads
+    _emscripten_thread_exit_joinable(self);
+#endif
     a_store(&self->detach_state, DT_EXITED);
     __wake(&self->detach_state, 1, 1); // Wake any joiner.
   }

@@ -16,15 +16,16 @@
 
 const fs = require('fs');
 const path = require('path');
+global.vm = require('vm');
 
-const arguments_ = process['argv'].slice(2);
+const arguments_ = process.argv.slice(2);
 const debug = false;
 
 global.print = function(x) {
-  process['stdout'].write(x + '\n');
+  process.stdout.write(x + '\n');
 };
 global.printErr = function(x) {
-  process['stderr'].write(x + '\n');
+  process.stderr.write(x + '\n');
 };
 
 global.assert = require('assert');
@@ -46,7 +47,7 @@ global.read = function(filename) {
 };
 
 global.load = function(f) {
-  eval.call(null, read(f));
+  (0, eval)(read(f) + '//# sourceURL=' + find(f));
 };
 
 const settingsFile = arguments_[0];
@@ -58,7 +59,6 @@ load('utility.js');
 load('modules.js');
 load('parseTools.js');
 
-const fromHTML = read(shellFile);
-const toHTML = expandMacros ? processMacros(preprocess(fromHTML, shellFile)) : preprocess(fromHTML, shellFile);
+const toHTML = expandMacros ? processMacros(preprocess(shellFile)) : preprocess(shellFile);
 
 print(toHTML);

@@ -46,7 +46,7 @@ extern "C" {
 
 void _embind_fatal_error(
     const char* name,
-    const char* payload) __attribute__((noreturn));
+    const char* payload) __attribute__((__noreturn__));
 
 void _embind_register_void(
     TYPEID voidType,
@@ -501,8 +501,6 @@ EMSCRIPTEN_ALWAYS_INLINE const char* getSignature(Return (*)(Args...)) {
 ////////////////////////////////////////////////////////////////////////////////
 // FUNCTIONS
 ////////////////////////////////////////////////////////////////////////////////
-
-extern "C" void* __getDynamicPointerType(void* p);
 
 template<typename ReturnType, typename... Args, typename... Policies>
 void function(const char* name, ReturnType (*fn)(Args...), Policies...) {

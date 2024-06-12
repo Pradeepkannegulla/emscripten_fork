@@ -145,7 +145,9 @@ Debug printouts can even execute arbitrary JavaScript. For example::
   }
 
 
-Handling C++ exceptions from javascript
+.. _handling-c-exceptions-from-javascript:
+
+Handling C++ exceptions from JavaScript
 =======================================
 
 C++ exceptions are thrown from WebAssembly using exception pointers, which means
@@ -168,7 +170,7 @@ returns the ``what`` function call result.
     emscripten::function("getExceptionMessage", &getExceptionMessage);
   };
 
-This requires using the linker flag ``--bind``.
+This requires using the linker flags ``-lembind -sEXPORT_EXCEPTION_HANDLING_HELPERS``.
 Once such a function has been created, exception handling code in javascript
 can call it when receiving an exception from WASM. Here the function is used
 in order to log the thrown exception.
@@ -236,6 +238,7 @@ In order to debug these sorts of issues:
 - Compile with ``-Werror``. This turns warnings into errors, which can be useful as some cases of undefined behavior would otherwise show warnings.
 - Use ``-sASSERTIONS=2`` to get some useful information about the function pointer being called, and its type.
 - Look at the browser stack trace to see where the error occurs and which function should have been called.
+- Enable clang warnings on dangerous function pointer casts using ``-Wcast-function-type``.
 - Build with :ref:`SAFE_HEAP=1 <debugging-SAFE-HEAP>`.
 - :ref:`Sanitizers` can help here, in particular UBSan.
 

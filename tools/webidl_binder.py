@@ -10,12 +10,13 @@ https://emscripten.org/docs/porting/connecting_cpp_and_javascript/WebIDL-Binder.
 
 import os
 import sys
+from typing import List
 
 __scriptdir__ = os.path.dirname(os.path.abspath(__file__))
 __rootdir__ = os.path.dirname(__scriptdir__)
 sys.path.append(__rootdir__)
 
-from tools import shared, utils
+from tools import utils
 
 sys.path.append(utils.path_from_root('third_party'))
 sys.path.append(utils.path_from_root('third_party/ply'))
@@ -43,15 +44,15 @@ class Dummy:
     for k, v in init.items():
       self.__dict__[k] = v
 
-  def getExtendedAttribute(self, name): # noqa: U100
+  def getExtendedAttribute(self, _name):
     return None
 
 
 input_file = sys.argv[1]
 output_base = sys.argv[2]
 
-shared.try_delete(output_base + '.cpp')
-shared.try_delete(output_base + '.js')
+utils.delete_file(output_base + '.cpp')
+utils.delete_file(output_base + '.js')
 
 p = WebIDL.Parser()
 p.parse(r'''
@@ -81,6 +82,8 @@ mid_js = []
 
 pre_c += [r'''
 #include <emscripten.h>
+
+EM_JS_DEPS(webidl_binder, "$intArrayFromString");
 ''']
 
 mid_c += [r'''
@@ -641,7 +644,7 @@ for name in names:
   mid_js += ['\n// ' + name + '\n']
   mid_c += ['\n// ' + name + '\n']
 
-  js_impl_methods = []
+  js_impl_methods: List[str] = []
 
   cons = interface.getExtendedAttribute('Constructor')
   if type(cons) == list:

@@ -44,7 +44,7 @@ void* _wasmfs_read_file(char* path) {
     emscripten_console_error("Fatal error in FS.readFile");
     abort();
   }
-  int numRead = pread(fd, result + sizeof(size), size, 0);
+  [[maybe_unused]] int numRead = pread(fd, result + sizeof(size), size, 0);
   // TODO: Generalize this so that it is thread-proof.
   // Must guarantee that the file size has not changed by the time it is read.
   assert(numRead == size);
@@ -58,7 +58,7 @@ void* _wasmfs_read_file(char* path) {
 }
 
 // Writes to a file, possibly creating it, and returns the number of bytes
-// written successfully.
+// written successfully. If the file already exists, appends to it.
 int _wasmfs_write_file(char* pathname, char* data, size_t data_size) {
   auto parsedParent = path::parseParent(pathname);
   if (parsedParent.getError()) {
@@ -87,7 +87,9 @@ int _wasmfs_write_file(char* pathname, char* data, size_t data_size) {
     return 0;
   }
 
-  auto result = dataFile->locked().write((uint8_t*)data, data_size, 0);
+  auto lockedFile = dataFile->locked();
+  auto offset = lockedFile.getSize();
+  auto result = lockedFile.write((uint8_t*)data, data_size, offset);
   if (result != __WASI_ERRNO_SUCCESS) {
     return 0;
   }
@@ -96,6 +98,10 @@ int _wasmfs_write_file(char* pathname, char* data, size_t data_size) {
 
 int _wasmfs_mkdir(char* path, int mode) {
   return __syscall_mkdirat(AT_FDCWD, (intptr_t)path, mode);
+}
+
+int _wasmfs_unlink(char* path) {
+  return __syscall_unlinkat(AT_FDCWD, (intptr_t)path, 0);
 }
 
 int _wasmfs_chdir(char* path) { return __syscall_chdir((intptr_t)path); }

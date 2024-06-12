@@ -24,6 +24,9 @@ mergeInto(LibraryManager.library, {
 #if ASSERTIONS
     '$ERRNO_MESSAGES', '$ERRNO_CODES',
 #endif
+#if ASSERTIONS && !MINIMAL_RUNTIME
+    '$demangleAll',
+#endif
     ],
   $FS__postset: function() {
     // TODO: do we need noFSInit?
@@ -116,7 +119,7 @@ FS.staticInit();` +
     // paths
     //
     lookupPath: (path, opts = {}) => {
-      path = PATH_FS.resolve(FS.cwd(), path);
+      path = PATH_FS.resolve(path);
 
       if (!path) return { path: '', node: null };
 
@@ -130,8 +133,8 @@ FS.staticInit();` +
         throw new FS.ErrnoError({{{ cDefine('ELOOP') }}});
       }
 
-      // split the path
-      var parts = PATH.normalizeArray(path.split('/').filter((p) => !!p), false);
+      // split the absolute path
+      var parts = path.split('/').filter((p) => !!p);
 
       // start at the root
       var current = FS.root;
@@ -1090,7 +1093,7 @@ FS.staticInit();` +
         if (!(path in FS.readFiles)) {
           FS.readFiles[path] = 1;
 #if FS_DEBUG
-          err("FS.trackingDelegate error on read file: " + path);
+          dbg("FS.trackingDelegate error on read file: " + path);
 #endif
         }
       }
@@ -1258,7 +1261,7 @@ FS.staticInit();` +
 #if CAN_ADDRESS_2GB
       offset >>>= 0;
 #endif
-      if (!stream || !stream.stream_ops.msync) {
+      if (!stream.stream_ops.msync) {
         return 0;
       }
       return stream.stream_ops.msync(stream, buffer, offset, length, mmapFlags);
@@ -1418,6 +1421,13 @@ FS.staticInit();` +
     ensureErrnoError: () => {
       if (FS.ErrnoError) return;
       FS.ErrnoError = /** @this{Object} */ function ErrnoError(errno, node) {
+        // We set the `name` property to be able to identify `FS.ErrnoError`
+        // - the `name` is a standard ECMA-262 property of error objects. Kind of good to have it anyway.
+        // - when using PROXYFS, an error can come from an underlying FS
+        // as different FS objects have their own FS.ErrnoError each,
+        // the test `err instanceof FS.ErrnoError` won't detect an error coming from another filesystem, causing bugs.
+        // we'll use the reliable test `err.name == "ErrnoError"` instead
+        this.name = 'ErrnoError';
         this.node = node;
         this.setErrno = /** @this{Object} */ function(errno) {
           this.errno = errno;
@@ -1908,9 +1918,7 @@ FS.staticInit();` +
     DB_STORE_NAME: 'FILE_DATA',
 
     // asynchronously saves a list of files to an IndexedDB. The DB will be created if not already existing.
-    saveFilesToDB: (paths, onload, onerror) => {
-      onload = onload || (() => {});
-      onerror = onerror || (() => {});
+    saveFilesToDB: (paths, onload = (() => {}), onerror = (() => {})) => {
       var indexedDB = FS.indexedDB();
       try {
         var openRequest = indexedDB.open(FS.DB_NAME(), FS.DB_VERSION);
@@ -1941,9 +1949,7 @@ FS.staticInit();` +
     },
 
     // asynchronously loads a file from IndexedDB.
-    loadFilesFromDB: (paths, onload, onerror) => {
-      onload = onload || (() => {});
-      onerror = onerror || (() => {});
+    loadFilesFromDB: (paths, onload = (() => {}), onerror = (() => {})) => {
       var indexedDB = FS.indexedDB();
       try {
         var openRequest = indexedDB.open(FS.DB_NAME(), FS.DB_VERSION);

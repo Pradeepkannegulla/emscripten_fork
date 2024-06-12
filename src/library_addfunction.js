@@ -23,7 +23,12 @@ mergeInto(LibraryManager.library, {
   $sigToWasmTypes: function(sig) {
     var typeNames = {
       'i': 'i32',
+#if MEMORY64
       'j': 'i64',
+#else
+      // i64 values will be split into two i32s.
+      'j': 'i32',
+#endif
       'f': 'f32',
       'd': 'f64',
 #if MEMORY64
@@ -41,15 +46,53 @@ mergeInto(LibraryManager.library, {
       assert(sig[i] in typeNames, 'invalid signature char: ' + sig[i]);
 #endif
       type.parameters.push(typeNames[sig[i]]);
+#if !MEMORY64
+      if (sig[i] === 'j') {
+        type.parameters.push('i32');
+      }
+#endif
     }
     return type;
   },
-
+  $generateFuncType__deps: ['$uleb128Encode'],
+  $generateFuncType : function(sig, target){
+    var sigRet = sig.slice(0, 1);
+    var sigParam = sig.slice(1);
+    var typeCodes = {
+      'i': 0x7f, // i32
+#if MEMORY64
+      'p': 0x7e, // i64
+#else
+      'p': 0x7f, // i32
+#endif
+      'j': 0x7e, // i64
+      'f': 0x7d, // f32
+      'd': 0x7c, // f64
+    };
+  
+    // Parameters, length + signatures
+    target.push(0x60 /* form: func */);
+    uleb128Encode(sigParam.length, target);
+    for (var i = 0; i < sigParam.length; ++i) {
+#if ASSERTIONS
+      assert(sigParam[i] in typeCodes, 'invalid signature char: ' + sigParam[i]);
+#endif
+  target.push(typeCodes[sigParam[i]]);
+    }
+  
+    // Return values, length + signatures
+    // With no multi-return in MVP, either 0 (void) or 1 (anything else)
+    if (sigRet == 'v') {
+      target.push(0x00);
+    } else {
+      target.push(0x01, typeCodes[sigRet]);
+    }
+  },
   // Wraps a JS function as a wasm function with a given signature.
-  $convertJsFunctionToWasm__deps: ['$uleb128Encode', '$sigToWasmTypes'],
+  $convertJsFunctionToWasm__deps: ['$uleb128Encode', '$sigToWasmTypes', '$generateFuncType'],
   $convertJsFunctionToWasm: function(func, sig) {
 #if WASM2JS
-    return func;
+    // return func;
 #else // WASM2JS
 
     // If the type reflection proposal is available, use the new
@@ -64,38 +107,8 @@ mergeInto(LibraryManager.library, {
     // generated based on the signature passed in.
     var typeSectionBody = [
       0x01, // count: 1
-      0x60, // form: func
     ];
-    var sigRet = sig.slice(0, 1);
-    var sigParam = sig.slice(1);
-    var typeCodes = {
-      'i': 0x7f, // i32
-#if MEMORY64
-      'p': 0x7e, // i64
-#else
-      'p': 0x7f, // i32
-#endif
-      'j': 0x7e, // i64
-      'f': 0x7d, // f32
-      'd': 0x7c, // f64
-    };
-
-    // Parameters, length + signatures
-    uleb128Encode(sigParam.length, typeSectionBody);
-    for (var i = 0; i < sigParam.length; ++i) {
-#if ASSERTIONS
-      assert(sigParam[i] in typeCodes, 'invalid signature char: ' + sigParam[i]);
-#endif
-      typeSectionBody.push(typeCodes[sigParam[i]]);
-    }
-
-    // Return values, length + signatures
-    // With no multi-return in MVP, either 0 (void) or 1 (anything else)
-    if (sigRet == 'v') {
-      typeSectionBody.push(0x00);
-    } else {
-      typeSectionBody.push(0x01, typeCodes[sigRet]);
-    }
+    generateFuncType(sig, typeSectionBody);
 
     // Rest of the module is static
     var bytes = [
@@ -162,27 +175,33 @@ mergeInto(LibraryManager.library, {
     }
   },
 
+  $getFunctionAddress__deps: ['$updateTableMap', '$functionsInTableMap'],
+  $getFunctionAddress: function(func) {
+    // First, create the map if this is the first use.
+    if (!functionsInTableMap) {
+      functionsInTableMap = new WeakMap();
+      updateTableMap(0, wasmTable.length);
+    }
+    return functionsInTableMap.get(func) || 0;
+  },
+
   /**
    * Add a function to the table.
    * 'sig' parameter is required if the function being added is a JS function.
    */
   $addFunction__docs: '/** @param {string=} sig */',
-  $addFunction__deps: ['$convertJsFunctionToWasm', '$updateTableMap',
+  $addFunction__deps: ['$convertJsFunctionToWasm', '$getFunctionAddress',
                        '$functionsInTableMap', '$getEmptyTableSlot',
                        '$getWasmTableEntry', '$setWasmTableEntry'],
   $addFunction: function(func, sig) {
   #if ASSERTIONS
     assert(typeof func != 'undefined');
   #endif // ASSERTIONS
-
     // Check if the function is already in the table, to ensure each function
-    // gets a unique index. First, create the map if this is the first use.
-    if (!functionsInTableMap) {
-      functionsInTableMap = new WeakMap();
-      updateTableMap(0, wasmTable.length);
-    }
-    if (functionsInTableMap.has(func)) {
-      return functionsInTableMap.get(func);
+    // gets a unique index.
+    var rtn = getFunctionAddress(func);
+    if (rtn) {
+      return rtn;
     }
 
     // It's not in the table, add it now.

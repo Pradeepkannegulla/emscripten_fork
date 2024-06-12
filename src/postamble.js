@@ -8,88 +8,6 @@
 
 {{{ exportRuntime() }}}
 
-#if !MEM_INIT_IN_WASM
-function runMemoryInitializer() {
-#if USE_PTHREADS
-  if (!memoryInitializer || ENVIRONMENT_IS_PTHREAD) return;
-#else
-  if (!memoryInitializer) return
-#endif
-  if (!isDataURI(memoryInitializer)) {
-    memoryInitializer = locateFile(memoryInitializer);
-  }
-  if (ENVIRONMENT_IS_NODE || ENVIRONMENT_IS_SHELL) {
-    var data = readBinary(memoryInitializer);
-    HEAPU8.set(data, {{{ GLOBAL_BASE }}});
-  } else {
-    addRunDependency('memory initializer');
-    var applyMemoryInitializer = (data) => {
-      if (data.byteLength) data = new Uint8Array(data);
-#if ASSERTIONS
-      for (var i = 0; i < data.length; i++) {
-        assert(HEAPU8[{{{ GLOBAL_BASE }}} + i] === 0, "area for memory initializer should not have been touched before it's loaded");
-      }
-#endif
-      HEAPU8.set(data, {{{ GLOBAL_BASE }}});
-      // Delete the typed array that contains the large blob of the memory initializer request response so that
-      // we won't keep unnecessary memory lying around. However, keep the XHR object itself alive so that e.g.
-      // its .status field can still be accessed later.
-      if (Module['memoryInitializerRequest']) delete Module['memoryInitializerRequest'].response;
-      removeRunDependency('memory initializer');
-    };
-    var doBrowserLoad = () => {
-      readAsync(memoryInitializer, applyMemoryInitializer, function() {
-        var e = new Error('could not load memory initializer ' + memoryInitializer);
-#if MODULARIZE
-          readyPromiseReject(e);
-#else
-          throw e;
-#endif
-      });
-    };
-#if SUPPORT_BASE64_EMBEDDING
-    var memoryInitializerBytes = tryParseAsDataURI(memoryInitializer);
-    if (memoryInitializerBytes) {
-      applyMemoryInitializer(memoryInitializerBytes.buffer);
-    } else
-#endif
-    if (Module['memoryInitializerRequest']) {
-      // a network request has already been created, just use that
-      var useRequest = () => {
-        var request = Module['memoryInitializerRequest'];
-        var response = request.response;
-        if (request.status !== 200 && request.status !== 0) {
-#if SUPPORT_BASE64_EMBEDDING
-          var data = tryParseAsDataURI(Module['memoryInitializerRequestURL']);
-          if (data) {
-            response = data.buffer;
-          } else {
-#endif
-            // If you see this warning, the issue may be that you are using locateFile and defining it in JS. That
-            // means that the HTML file doesn't know about it, and when it tries to create the mem init request early, does it to the wrong place.
-            // Look in your browser's devtools network console to see what's going on.
-            console.warn('a problem seems to have happened with Module.memoryInitializerRequest, status: ' + request.status + ', retrying ' + memoryInitializer);
-            doBrowserLoad();
-            return;
-#if SUPPORT_BASE64_EMBEDDING
-          }
-#endif
-        }
-        applyMemoryInitializer(response);
-      };
-      if (Module['memoryInitializerRequest'].response) {
-        setTimeout(useRequest, 0); // it's already here; but, apply it asynchronously
-      } else {
-        Module['memoryInitializerRequest'].addEventListener('load', useRequest); // wait for it
-      }
-    } else {
-      // fetch it from the network ourselves
-      doBrowserLoad();
-    }
-  }
-}
-#endif // MEM_INIT_IN_WASM == 0
-
 var calledRun;
 
 #if STANDALONE_WASM && MAIN_READS_PARAMS
@@ -103,26 +21,22 @@ dependenciesFulfilled = function runCaller() {
 };
 
 #if HAS_MAIN
-function callMain(args) {
+#if MAIN_READS_PARAMS
+function callMain(args = []) {
+#else
+function callMain() {
+#endif
 #if ASSERTIONS
   assert(runDependencies == 0, 'cannot call main when async dependencies remain! (listen on Module["onRuntimeInitialized"])');
   assert(__ATPRERUN__.length == 0, 'cannot call main when preRun functions remain to be called');
 #endif
 
-#if STANDALONE_WASM
-#if EXPECT_MAIN
-  var entryFunction = Module['__start'];
-#else
-  var entryFunction = Module['__initialize'];
-#endif
-#else
+  var entryFunction = {{{ getEntryFunction() }}};
+
 #if PROXY_TO_PTHREAD
-  // User requested the PROXY_TO_PTHREAD option, so call a stub main which pthread_create()s a new thread
-  // that will call the user's real main() for the application.
-  var entryFunction = Module['__emscripten_proxy_main'];
-#else
-  var entryFunction = Module['_main'];
-#endif
+  // With PROXY_TO_PTHREAD make sure we keep the runtime alive until the
+  // proxied main calls exit (see exitOnMainThread() for where Pop is called).
+  {{{ runtimeKeepalivePush() }}}
 #endif
 
 #if MAIN_MODULE
@@ -134,7 +48,6 @@ function callMain(args) {
 #if MAIN_READS_PARAMS && STANDALONE_WASM
   mainArgs = [thisProgram].concat(args)
 #elif MAIN_READS_PARAMS
-  args = args || [];
   args.unshift(thisProgram);
 
   var argc = args.length;
@@ -149,9 +62,7 @@ function callMain(args) {
   var argv = 0;
 #endif // MAIN_READS_PARAMS
 
-#if ABORT_ON_WASM_EXCEPTIONS || !PROXY_TO_PTHREAD
   try {
-#endif
 #if BENCHMARK
     var start = Date.now();
 #endif
@@ -167,28 +78,31 @@ function callMain(args) {
     // that if we get here main returned zero.
     var ret = 0;
 #else
-    var ret = entryFunction(argc, argv);
+    var ret = entryFunction(argc, {{{ to64('argv') }}});
 #endif // STANDALONE_WASM
 
 #if BENCHMARK
     Module.realPrint('main() took ' + (Date.now() - start) + ' milliseconds');
 #endif
 
-    // In PROXY_TO_PTHREAD builds, we should never exit the runtime below, as
-    // execution is asynchronously handed off to a pthread.
-#if PROXY_TO_PTHREAD
-#if ASSERTIONS
-    assert(ret == 0, '_emscripten_proxy_main failed to start proxy thread: ' + ret);
-#endif
+#if ASYNCIFY == 2
+    // The current spec of JSPI returns a promise only if the function suspends
+    // and a plain value otherwise. This will likely change:
+    // https://github.com/WebAssembly/js-promise-integration/issues/11
+    Promise.resolve(ret).then((result) => {
+      exitJS(result, /* implicit = */ true);
+    }).catch((e) => {
+      handleException(e);
+    });
 #else
     // if we're not running an evented main loop, it's time to exit
     exitJS(ret, /* implicit = */ true);
+#endif // ASYNCIFY == 2
     return ret;
   }
   catch (e) {
     return handleException(e);
   }
-#endif // !PROXY_TO_PTHREAD
 #if ABORT_ON_WASM_EXCEPTIONS
   finally {
     // See abortWrapperDepth in preamble.js!
@@ -208,7 +122,7 @@ function stackCheckInit() {
   assert(!ENVIRONMENT_IS_PTHREAD);
 #endif
 #if RELOCATABLE
-  _emscripten_stack_set_limits({{{ STACK_BASE }}} , {{{ STACK_MAX }}});
+  _emscripten_stack_set_limits({{{ STACK_HIGH }}} , {{{ STACK_LOW }}});
 #else
   _emscripten_stack_init();
 #endif
@@ -219,11 +133,16 @@ function stackCheckInit() {
 
 #if RELOCATABLE
 var dylibsLoaded = false;
+#if '$LDSO' in addedLibraryItems
+LDSO.init();
+#endif
 #endif
 
-/** @type {function(Array=)} */
-function run(args) {
-  args = args || arguments_;
+#if MAIN_READS_PARAMS
+function run(args = arguments_) {
+#else
+function run() {
+#endif
 
   if (runDependencies > 0) {
 #if RUNTIME_LOGGING
@@ -278,7 +197,7 @@ function run(args) {
     readyPromiseResolve(Module);
 #endif // MODULARIZE
     initRuntime();
-    postMessage({ 'cmd': 'loaded' });
+    startWorker(Module);
     return;
   }
 #endif
@@ -316,7 +235,11 @@ function run(args) {
 #endif
 
 #if HAS_MAIN
+#if MAIN_READS_PARAMS
     if (shouldRunNow) callMain(args);
+#else
+    if (shouldRunNow) callMain();
+#endif
 #else
 #if ASSERTIONS
     assert(!Module['_main'], 'compiled without a main, but one is present. if you added it from JS, use Module["onRuntimeInitialized"]');

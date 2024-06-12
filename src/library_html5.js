@@ -514,9 +514,7 @@ var LibraryHTML5 = {
     if (!JSEvents.mouseEvent) JSEvents.mouseEvent = _malloc( {{{ C_STRUCTS.EmscriptenMouseEvent.__size__ }}} );
     target = findEventTarget(target);
 
-    var mouseEventHandlerFunc = function(ev) {
-      var e = ev || event;
-
+    var mouseEventHandlerFunc = function(e = event) {
       // TODO: Make this access thread safe, or this could update live while app is reading it.
       fillMouseEventData(JSEvents.mouseEvent, e, target);
 
@@ -639,8 +637,7 @@ var LibraryHTML5 = {
     if (!JSEvents.wheelEvent) JSEvents.wheelEvent = _malloc( {{{ C_STRUCTS.EmscriptenWheelEvent.__size__ }}} );
 
     // The DOM Level 3 events spec event 'wheel'
-    var wheelHandlerFunc = function(ev) {
-      var e = ev || event;
+    var wheelHandlerFunc = function(e = event) {
 #if USE_PTHREADS
       var wheelEvent = targetThread ? _malloc( {{{ C_STRUCTS.EmscriptenWheelEvent.__size__ }}} ) : JSEvents.wheelEvent; // This allocated block is passed as satellite data to the proxied function call, so the call frees up the data block when done.
 #else
@@ -659,8 +656,7 @@ var LibraryHTML5 = {
     };
 #if MIN_IE_VERSION <= 8 || MIN_SAFARI_VERSION < 60100 // Browsers that do not support https://caniuse.com/#feat=mdn-api_wheelevent
     // The 'mousewheel' event as implemented in Safari 6.0.5
-    var mouseWheelHandlerFunc = function(ev) {
-      var e = ev || event;
+    var mouseWheelHandlerFunc = function(e = event) {
       fillMouseEventData(JSEvents.wheelEvent, e, target);
       {{{ makeSetValue('JSEvents.wheelEvent', C_STRUCTS.EmscriptenWheelEvent.deltaX, 'e["wheelDeltaX"] || 0', 'double') }}};
       /* 1. Invert to unify direction with the DOM Level 3 wheel event. 2. MSIE does not provide wheelDeltaY, so wheelDelta is used as a fallback. */
@@ -728,8 +724,7 @@ var LibraryHTML5 = {
 #else
 #endif
 
-    var uiEventHandlerFunc = function(ev) {
-      var e = ev || event;
+    var uiEventHandlerFunc = function(e = event) {
       if (e.target != target) {
         // Never take ui events such as scroll via a 'bubbled' route, but always from the direct element that
         // was targeted. Otherwise e.g. if app logs a message in response to a page scroll, the Emscripten log
@@ -796,9 +791,7 @@ var LibraryHTML5 = {
 #endif
     if (!JSEvents.focusEvent) JSEvents.focusEvent = _malloc( {{{ C_STRUCTS.EmscriptenFocusEvent.__size__ }}} );
 
-    var focusEventHandlerFunc = function(ev) {
-      var e = ev || event;
-
+    var focusEventHandlerFunc = function(e = event) {
       var nodeName = JSEvents.getNodeNameForTarget(e.target);
       var id = e.target.id ? e.target.id : '';
 
@@ -874,9 +867,7 @@ var LibraryHTML5 = {
 #endif
     if (!JSEvents.deviceOrientationEvent) JSEvents.deviceOrientationEvent = _malloc( {{{ C_STRUCTS.EmscriptenDeviceOrientationEvent.__size__ }}} );
 
-    var deviceOrientationEventHandlerFunc = function(ev) {
-      var e = ev || event;
-
+    var deviceOrientationEventHandlerFunc = function(e = event) {
       fillDeviceOrientationEventData(JSEvents.deviceOrientationEvent, e, target); // TODO: Thread-safety with respect to emscripten_get_deviceorientation_status()
 
 #if USE_PTHREADS
@@ -949,9 +940,7 @@ var LibraryHTML5 = {
 #endif
     if (!JSEvents.deviceMotionEvent) JSEvents.deviceMotionEvent = _malloc( {{{ C_STRUCTS.EmscriptenDeviceMotionEvent.__size__ }}} );
 
-    var deviceMotionEventHandlerFunc = function(ev) {
-      var e = ev || event;
-
+    var deviceMotionEventHandlerFunc = function(e = event) {
       fillDeviceMotionEventData(JSEvents.deviceMotionEvent, e, target); // TODO: Thread-safety with respect to emscripten_get_devicemotion_status()
 
 #if USE_PTHREADS
@@ -1021,9 +1010,7 @@ var LibraryHTML5 = {
 #endif
     if (!JSEvents.orientationChangeEvent) JSEvents.orientationChangeEvent = _malloc( {{{ C_STRUCTS.EmscriptenOrientationChangeEvent.__size__ }}} );
 
-    var orientationChangeEventHandlerFunc = function(ev) {
-      var e = ev || event;
-
+    var orientationChangeEventHandlerFunc = function(e = event) {
 #if USE_PTHREADS
       var orientationChangeEvent = targetThread ? _malloc( {{{ C_STRUCTS.EmscriptenDeviceMotionEvent.__size__ }}} ) : JSEvents.orientationChangeEvent;
 #else
@@ -1147,9 +1134,7 @@ var LibraryHTML5 = {
 #endif
     if (!JSEvents.fullscreenChangeEvent) JSEvents.fullscreenChangeEvent = _malloc( {{{ C_STRUCTS.EmscriptenFullscreenChangeEvent.__size__ }}} );
 
-    var fullscreenChangeEventhandlerFunc = function(ev) {
-      var e = ev || event;
-
+    var fullscreenChangeEventhandlerFunc = function(e = event) {
 #if USE_PTHREADS
       var fullscreenChangeEvent = targetThread ? _malloc( {{{ C_STRUCTS.EmscriptenFullscreenChangeEvent.__size__ }}} ) : JSEvents.fullscreenChangeEvent;
 #else
@@ -1734,9 +1719,7 @@ var LibraryHTML5 = {
 #endif
     if (!JSEvents.pointerlockChangeEvent) JSEvents.pointerlockChangeEvent = _malloc( {{{ C_STRUCTS.EmscriptenPointerlockChangeEvent.__size__ }}} );
 
-    var pointerlockChangeEventHandlerFunc = function(ev) {
-      var e = ev || event;
-
+    var pointerlockChangeEventHandlerFunc = function(e = event) {
 #if USE_PTHREADS
       var pointerlockChangeEvent = targetThread ? _malloc( {{{ C_STRUCTS.EmscriptenPointerlockChangeEvent.__size__ }}} ) : JSEvents.pointerlockChangeEvent;
 #else
@@ -1790,9 +1773,7 @@ var LibraryHTML5 = {
     targetThread = JSEvents.getTargetThreadForEventCallback(targetThread);
 #endif
 
-    var pointerlockErrorEventHandlerFunc = function(ev) {
-      var e = ev || event;
-
+    var pointerlockErrorEventHandlerFunc = function(e = event) {
 #if USE_PTHREADS
       if (targetThread) JSEvents.queueEventHandlerOnThread_iiii(targetThread, callbackfunc, eventTypeId, 0, userData);
       else
@@ -1991,9 +1972,7 @@ var LibraryHTML5 = {
 #endif
     if (!JSEvents.visibilityChangeEvent) JSEvents.visibilityChangeEvent = _malloc( {{{ C_STRUCTS.EmscriptenVisibilityChangeEvent.__size__ }}} );
 
-    var visibilityChangeEventHandlerFunc = function(ev) {
-      var e = ev || event;
-
+    var visibilityChangeEventHandlerFunc = function(e = event) {
 #if USE_PTHREADS
       var visibilityChangeEvent = targetThread ? _malloc( {{{ C_STRUCTS.EmscriptenVisibilityChangeEvent.__size__ }}} ) : JSEvents.visibilityChangeEvent;
 #else
@@ -2212,9 +2191,7 @@ var LibraryHTML5 = {
 #endif
     if (!JSEvents.gamepadEvent) JSEvents.gamepadEvent = _malloc( {{{ C_STRUCTS.EmscriptenGamepadEvent.__size__ }}} );
 
-    var gamepadEventHandlerFunc = function(ev) {
-      var e = ev || event;
-
+    var gamepadEventHandlerFunc = function(e = event) {
 #if USE_PTHREADS
       var gamepadEvent = targetThread ? _malloc( {{{ C_STRUCTS.EmscriptenGamepadEvent.__size__ }}} ) : JSEvents.gamepadEvent;
 #else
@@ -2303,9 +2280,7 @@ var LibraryHTML5 = {
   
   $registerBeforeUnloadEventCallback__deps: ['$JSEvents', '$findEventTarget'],
   $registerBeforeUnloadEventCallback: function(target, userData, useCapture, callbackfunc, eventTypeId, eventTypeString) {
-    var beforeUnloadEventHandlerFunc = function(ev) {
-      var e = ev || event;
-
+    var beforeUnloadEventHandlerFunc = function(e = event) {
       // Note: This is always called on the main browser thread, since it needs synchronously return a value!
       var confirmationMessage = {{{ makeDynCall('iiii', 'callbackfunc') }}}(eventTypeId, 0, userData);
       
@@ -2357,9 +2332,7 @@ var LibraryHTML5 = {
 #endif
     if (!JSEvents.batteryEvent) JSEvents.batteryEvent = _malloc( {{{ C_STRUCTS.EmscriptenBatteryEvent.__size__ }}} );
 
-    var batteryEventHandlerFunc = function(ev) {
-      var e = ev || event;
-
+    var batteryEventHandlerFunc = function(e = event) {
 #if USE_PTHREADS
       var batteryEvent = targetThread ? _malloc( {{{ C_STRUCTS.EmscriptenBatteryEvent.__size__ }}} ) : JSEvents.batteryEvent;
 #else
@@ -2444,7 +2417,7 @@ var LibraryHTML5 = {
         // TODO: Perhaps autoResizeViewport should only be true if FBO 0 is currently active?
         autoResizeViewport = (prevViewport[0] === 0 && prevViewport[1] === 0 && prevViewport[2] === canvas.width && prevViewport[3] === canvas.height);
 #if GL_DEBUG
-        err('Resizing canvas from ' + canvas.width + 'x' + canvas.height + ' to ' + width + 'x' + height + '. Previous GL viewport size was ' 
+        dbg('Resizing canvas from ' + canvas.width + 'x' + canvas.height + ' to ' + width + 'x' + height + '. Previous GL viewport size was ' 
           + prevViewport + ', so autoResizeViewport=' + autoResizeViewport);
 #endif
       }
@@ -2452,7 +2425,7 @@ var LibraryHTML5 = {
       canvas.height = height;
       if (autoResizeViewport) {
 #if GL_DEBUG
-        err('Automatically resizing GL viewport to cover whole render target ' + width + 'x' + height);
+        dbg('Automatically resizing GL viewport to cover whole render target ' + width + 'x' + height);
 #endif
         // TODO: Add -sCANVAS_RESIZE_SETS_GL_VIEWPORT=0/1 option (default=1). This is commonly done and several graphics engines depend on this,
         // but this can be quite disruptive.
@@ -2466,7 +2439,7 @@ var LibraryHTML5 = {
 #endif
     } else {
 #if GL_DEBUG
-      err('canvas.controlTransferredOffscreen but we do not own the canvas, and do not know who has (no canvas.canvasSharedPtr present, an internal bug?)!\n');
+      dbg('canvas.controlTransferredOffscreen but we do not own the canvas, and do not know who has (no canvas.canvasSharedPtr present, an internal bug?)!\n');
 #endif
       return {{{ cDefine('EMSCRIPTEN_RESULT_UNKNOWN_TARGET') }}};
     }
@@ -2522,7 +2495,7 @@ var LibraryHTML5 = {
   emscripten_set_canvas_element_size__sig: 'iiii',
   emscripten_set_canvas_element_size: function(target, width, height) {
 #if GL_DEBUG
-    err('emscripten_set_canvas_element_size(target='+target+',width='+width+',height='+height);
+    dbg('emscripten_set_canvas_element_size(target='+target+',width='+width+',height='+height);
 #endif
     var canvas = findCanvasEventTarget(target);
     if (canvas) {
@@ -2535,7 +2508,7 @@ var LibraryHTML5 = {
   emscripten_set_canvas_element_size__sig: 'iiii',
   emscripten_set_canvas_element_size: function(target, width, height) {
 #if GL_DEBUG
-    err('emscripten_set_canvas_element_size(target='+target+',width='+width+',height='+height);
+    dbg('emscripten_set_canvas_element_size(target='+target+',width='+width+',height='+height);
 #endif
     var canvas = findCanvasEventTarget(target);
     if (!canvas) return {{{ cDefine('EMSCRIPTEN_RESULT_UNKNOWN_TARGET') }}};
@@ -2551,7 +2524,7 @@ var LibraryHTML5 = {
   $setCanvasElementSize__deps: ['emscripten_set_canvas_element_size', '$withStackSave'],
   $setCanvasElementSize: function(target, width, height) {
 #if GL_DEBUG
-    err('setCanvasElementSize(target='+target+',width='+width+',height='+height);
+    dbg('setCanvasElementSize(target='+target+',width='+width+',height='+height);
 #endif
     if (!target.controlTransferredOffscreen) {
       target.width = width;
@@ -2592,7 +2565,7 @@ var LibraryHTML5 = {
       {{{ makeSetValue('height', 0, 'canvas.height', 'i32') }}};
     } else {
 #if GL_DEBUG
-      err('canvas.controlTransferredOffscreen but we do not own the canvas, and do not know who has (no canvas.canvasSharedPtr present, an internal bug?)!\n');
+      dbg('canvas.controlTransferredOffscreen but we do not own the canvas, and do not know who has (no canvas.canvasSharedPtr present, an internal bug?)!\n');
 #endif
       return {{{ cDefine('EMSCRIPTEN_RESULT_UNKNOWN_TARGET') }}};
     }
@@ -2604,6 +2577,7 @@ var LibraryHTML5 = {
   emscripten_get_canvas_element_size_main_thread__deps: ['emscripten_get_canvas_element_size_calling_thread'],
   emscripten_get_canvas_element_size_main_thread: function(target, width, height) { return _emscripten_get_canvas_element_size_calling_thread(target, width, height); },
 
+  emscripten_get_canvas_element_size__sig: 'ipii',
   emscripten_get_canvas_element_size__deps: ['$JSEvents', 'emscripten_get_canvas_element_size_calling_thread', 'emscripten_get_canvas_element_size_main_thread', '$findCanvasEventTarget'],
   emscripten_get_canvas_element_size: function(target, width, height) {
     var canvas = findCanvasEventTarget(target);
@@ -2705,6 +2679,7 @@ var LibraryHTML5 = {
     return requestAnimationFrame(tick);
   },
 
+  emscripten_date_now__sig: 'd',
   emscripten_date_now: function() {
     return Date.now();
   },

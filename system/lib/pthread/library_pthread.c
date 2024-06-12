@@ -190,7 +190,7 @@ static void _do_call(void* arg) {
       break;
     case EM_PROXIED_JS_FUNCTION:
       q->returnValue.d =
-        emscripten_receive_on_main_thread_js((int)(size_t)q->functionPtr, q->args[0].i, &q->args[1].d);
+        emscripten_receive_on_main_thread_js((intptr_t)q->functionPtr, q->args[0].i, &q->args[1].d);
       break;
     case EM_FUNC_SIG_V:
       ((em_func_v)q->functionPtr)();
@@ -395,101 +395,11 @@ void emscripten_async_run_in_main_thread(em_queued_call* call) {
   do_dispatch_to_thread(emscripten_main_browser_thread_id(), call);
 }
 
-void emscripten_sync_run_in_main_thread(em_queued_call* call) {
+static void sync_run_in_main_thread(em_queued_call* call) {
   emscripten_async_run_in_main_thread(call);
 
   // Enter to wait for the operation to complete.
   emscripten_wait_for_call_v(call, INFINITY);
-}
-
-void* emscripten_sync_run_in_main_thread_0(int function) {
-  em_queued_call q = {function};
-  q.returnValue.vp = 0;
-  emscripten_sync_run_in_main_thread(&q);
-  return q.returnValue.vp;
-}
-
-void* emscripten_sync_run_in_main_thread_1(int function, void* arg1) {
-  em_queued_call q = {function};
-  q.args[0].vp = arg1;
-  q.returnValue.vp = 0;
-  emscripten_sync_run_in_main_thread(&q);
-  return q.returnValue.vp;
-}
-
-void* emscripten_sync_run_in_main_thread_2(
-  int function, void* arg1, void* arg2) {
-  em_queued_call q = {function};
-  q.args[0].vp = arg1;
-  q.args[1].vp = arg2;
-  q.returnValue.vp = 0;
-  emscripten_sync_run_in_main_thread(&q);
-  return q.returnValue.vp;
-}
-
-void* emscripten_sync_run_in_main_thread_3(
-  int function, void* arg1, void* arg2, void* arg3) {
-  em_queued_call q = {function};
-  q.args[0].vp = arg1;
-  q.args[1].vp = arg2;
-  q.args[2].vp = arg3;
-  q.returnValue.vp = 0;
-  emscripten_sync_run_in_main_thread(&q);
-  return q.returnValue.vp;
-}
-
-void* emscripten_sync_run_in_main_thread_4(
-  int function, void* arg1, void* arg2, void* arg3, void* arg4) {
-  em_queued_call q = {function};
-  q.args[0].vp = arg1;
-  q.args[1].vp = arg2;
-  q.args[2].vp = arg3;
-  q.args[3].vp = arg4;
-  q.returnValue.vp = 0;
-  emscripten_sync_run_in_main_thread(&q);
-  return q.returnValue.vp;
-}
-
-void* emscripten_sync_run_in_main_thread_5(
-  int function, void* arg1, void* arg2, void* arg3, void* arg4, void* arg5) {
-  em_queued_call q = {function};
-  q.args[0].vp = arg1;
-  q.args[1].vp = arg2;
-  q.args[2].vp = arg3;
-  q.args[3].vp = arg4;
-  q.args[4].vp = arg5;
-  q.returnValue.vp = 0;
-  emscripten_sync_run_in_main_thread(&q);
-  return q.returnValue.vp;
-}
-
-void* emscripten_sync_run_in_main_thread_6(
-  int function, void* arg1, void* arg2, void* arg3, void* arg4, void* arg5, void* arg6) {
-  em_queued_call q = {function};
-  q.args[0].vp = arg1;
-  q.args[1].vp = arg2;
-  q.args[2].vp = arg3;
-  q.args[3].vp = arg4;
-  q.args[4].vp = arg5;
-  q.args[5].vp = arg6;
-  q.returnValue.vp = 0;
-  emscripten_sync_run_in_main_thread(&q);
-  return q.returnValue.vp;
-}
-
-void* emscripten_sync_run_in_main_thread_7(int function, void* arg1,
-  void* arg2, void* arg3, void* arg4, void* arg5, void* arg6, void* arg7) {
-  em_queued_call q = {function};
-  q.args[0].vp = arg1;
-  q.args[1].vp = arg2;
-  q.args[2].vp = arg3;
-  q.args[3].vp = arg4;
-  q.args[4].vp = arg5;
-  q.args[5].vp = arg6;
-  q.args[6].vp = arg7;
-  q.returnValue.vp = 0;
-  emscripten_sync_run_in_main_thread(&q);
-  return q.returnValue.vp;
 }
 
 void emscripten_current_thread_process_queued_calls() {
@@ -508,11 +418,11 @@ int emscripten_sync_run_in_main_runtime_thread_(EM_FUNC_SIGNATURE sig, void* fun
   va_start(args, func_ptr);
   init_em_queued_call_args(&q, sig, args);
   va_end(args);
-  emscripten_sync_run_in_main_thread(&q);
+  sync_run_in_main_thread(&q);
   return q.returnValue.i;
 }
 
-double emscripten_run_in_main_runtime_thread_js(int index, int num_args, int64_t* buffer, int sync) {
+double _emscripten_run_in_main_runtime_thread_js(int index, int num_args, int64_t* buffer, int sync) {
   em_queued_call q;
   em_queued_call *c;
   if (sync) {
@@ -525,7 +435,7 @@ double emscripten_run_in_main_runtime_thread_js(int index, int num_args, int64_t
   c->calleeDelete = 1-sync;
   c->functionEnum = EM_PROXIED_JS_FUNCTION;
   // Index not needed to ever be more than 32-bit.
-  c->functionPtr = (void*)(size_t)index;
+  c->functionPtr = (void*)(intptr_t)index;
   assert(num_args+1 <= EM_QUEUED_JS_CALL_MAX_ARGS);
   // The types are only known at runtime in these calls, so we store values that
   // must be able to contain any valid JS value, including a 64-bit BigInt if
@@ -537,7 +447,7 @@ double emscripten_run_in_main_runtime_thread_js(int index, int num_args, int64_t
   }
 
   if (sync) {
-    emscripten_sync_run_in_main_thread(&q);
+    sync_run_in_main_thread(&q);
     // TODO: support BigInt return values somehow.
     return q.returnValue.d;
   } else {
@@ -681,7 +591,8 @@ void __emscripten_init_main_thread(void) {
   // tid is always non-zero.
   __main_pthread.tid = getpid();
   __main_pthread.locale = &libc.global_locale;
-  // TODO(sbc): Implement circular list of threads
-  //__main_pthread.next = __main_pthread.prev = &__main_pthread;
+  // pthread struct prev and next should initially point to itself (see __init_tp),
+  // this is used by pthread_key_delete for deleting thread-specific data.
+  __main_pthread.next = __main_pthread.prev = &__main_pthread;
   __main_pthread.tsd = (void **)__pthread_tsd_main;
 }

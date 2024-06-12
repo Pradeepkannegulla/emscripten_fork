@@ -15,18 +15,11 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <sys/io.h>
 #include <errno.h>
 
 void test_mmap_read() {
   // Use mmap to read in.txt
-  EM_ASM(
-    FS.mkdir('yolo');
-    #if NODEFS
-        FS.mount(NODEFS, { root: '.' }, 'yolo');
-    #endif
-    FS.writeFile('yolo/in.txt', 'mmap ftw!');
-  );
+  EM_ASM(FS.writeFile('yolo/in.txt', 'mmap ftw!'));
 
   int fd = open("yolo/in.txt", O_RDONLY);
   assert(fd >= 0);
@@ -187,11 +180,12 @@ void test_mmap_shared_with_offset() {
     assert(fd >= 0);
     size_t offset = sysconf(_SC_PAGE_SIZE) * 2;
 
-    char buffer[offset + 33];
-    memset(buffer, 0, offset + 33);
-    fread(buffer, 1, offset + 32, fd);
+    char buffer[33];
+    memset(buffer, 0, 33);
+    fseek(fd, offset, SEEK_SET);
+    fread(buffer, 1, 32, fd);
     // expect text written from mmap operation to appear at offset in the file
-    printf("yolo/sharedoffset.txt content=%s %zu\n", buffer + offset, offset);
+    printf("yolo/sharedoffset.txt content=%s %zu\n", buffer, offset);
     fclose(fd);
   }
 }
@@ -230,7 +224,7 @@ void test_mmap_hint() {
  * operation.
  */
 void test_mmap_overallocate() {
-#if !defined(NODEFS) && !defined(NODERAWFS)
+#if !defined(NODEFS) && !defined(NODERAWFS) && !defined(WASMFS)
   int fd = open("yolo/overallocatedfile.txt", O_RDWR | O_CREAT, (mode_t)0600);
   assert(fd != -1);
 
@@ -270,6 +264,12 @@ void test_mmap_overallocate() {
 }
 
 int main() {
+  EM_ASM(
+    FS.mkdir('yolo');
+#if NODEFS
+    FS.mount(NODEFS, { root: '.' }, 'yolo');
+#endif
+  );
   test_mmap_read();
   test_mmap_write();
   test_mmap_readonly();

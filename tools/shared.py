@@ -5,9 +5,9 @@
 
 from .toolchain_profiler import ToolchainProfiler
 
+from functools import wraps
 from subprocess import PIPE
 import atexit
-import binascii
 import json
 import logging
 import os
@@ -34,7 +34,6 @@ logging.basicConfig(format='%(name)s:%(levelname)s: %(message)s',
                     level=logging.DEBUG if DEBUG else logging.INFO)
 colored_logger.enable()
 
-from .tempfiles import try_delete
 from .utils import path_from_root, exit_with_error, safe_ensure_dirs, WINDOWS
 from . import cache, tempfiles
 from . import diagnostics
@@ -45,8 +44,12 @@ from .settings import settings
 
 
 DEBUG_SAVE = DEBUG or int(os.environ.get('EMCC_DEBUG_SAVE', '0'))
-MINIMUM_NODE_VERSION = (4, 1, 1)
-EXPECTED_LLVM_VERSION = "16.0"
+# Minimum node version required to run the emscripten compiler.  This is distinct
+# from the minimum version required to execute the generated code.  This is not an
+# exact requirement, but is the oldest version of node that we do any testing with.
+# This version aligns with the current Ubuuntu TLS 20.04 (Focal).
+MINIMUM_NODE_VERSION = (10, 19, 0)
+EXPECTED_LLVM_VERSION = 17
 
 # Used only when EM_PYTHON_MULTIPROCESSING=1 env. var is set.
 multiprocessing_pool = None
@@ -74,6 +77,9 @@ diagnostics.add_warning('transpile')
 diagnostics.add_warning('limited-postlink-optimizations')
 diagnostics.add_warning('em-js-i64')
 diagnostics.add_warning('js-compiler')
+diagnostics.add_warning('compatibility')
+# Closure warning are not (yet) enabled by default
+diagnostics.add_warning('closure', enabled=False)
 
 
 # TODO(sbc): Investigate switching to shlex.quote
@@ -116,15 +122,13 @@ def get_num_cores():
 
 
 def mp_run_process(command_tuple):
-  temp_files = get_temp_files()
-  cmd, env, route_stdout_to_temp_files_suffix, pipe_stdout, check, cwd = command_tuple
-  std_out = temp_files.get(route_stdout_to_temp_files_suffix) if route_stdout_to_temp_files_suffix else (subprocess.PIPE if pipe_stdout else None)
-  ret = std_out.name if route_stdout_to_temp_files_suffix else None
-  proc = subprocess.Popen(cmd, stdout=std_out, stderr=subprocess.PIPE if pipe_stdout else None, env=env, cwd=cwd)
-  out, _ = proc.communicate()
-  if pipe_stdout:
-    ret = out.decode('UTF-8')
-  return ret
+  cmd, env, route_stdout_to_temp_files_suffix = command_tuple
+  stdout = None
+  if route_stdout_to_temp_files_suffix:
+    stdout = get_temp_files().get(route_stdout_to_temp_files_suffix)
+  subprocess.run(cmd, stdout=stdout, stderr=None, env=env, check=True)
+  if route_stdout_to_temp_files_suffix:
+    return stdout.name
 
 
 def returncode_to_str(code):
@@ -136,31 +140,35 @@ def returncode_to_str(code):
   return f'returned {code}'
 
 
-# Runs multiple subprocess commands.
-# bool 'check': If True (default), raises an exception if any of the subprocesses failed with a nonzero exit code.
-# string 'route_stdout_to_temp_files_suffix': if not None, all stdouts are instead written to files, and an array of filenames is returned.
-# bool 'pipe_stdout': If True, an array of stdouts is returned, for each subprocess.
 def run_multiple_processes(commands,
                            env=None,
-                           route_stdout_to_temp_files_suffix=None,
-                           pipe_stdout=False,
-                           check=True,
-                           cwd=None):
+                           route_stdout_to_temp_files_suffix=None):
+  """Runs multiple subprocess commands.
+
+  route_stdout_to_temp_files_suffix : string
+    if not None, all stdouts are instead written to files, and an array
+    of filenames is returned.
+  """
+
   if env is None:
     env = os.environ.copy()
-  # By default, avoid using Python multiprocessing library due to a large amount of bugs it has on Windows (#8013, #718, #13785, etc.)
-  # Use EM_PYTHON_MULTIPROCESSING=1 environment variable to enable it. It can be faster, but may not work on Windows.
+
+  # By default, avoid using Python multiprocessing library due to a large amount
+  # of bugs it has on Windows (#8013, #718, etc.)
+  # Use EM_PYTHON_MULTIPROCESSING=1 environment variable to enable it. It can be
+  # faster, but may not work on Windows.
   if int(os.getenv('EM_PYTHON_MULTIPROCESSING', '0')):
     import multiprocessing
+    max_workers = get_num_cores()
     global multiprocessing_pool
     if not multiprocessing_pool:
-      multiprocessing_pool = multiprocessing.Pool(processes=get_num_cores())
-    return multiprocessing_pool.map(mp_run_process, [(cmd, env, route_stdout_to_temp_files_suffix, pipe_stdout, check, cwd) for cmd in commands], chunksize=1)
+      if WINDOWS:
+        # Fix for python < 3.8 on windows. See: https://github.com/python/cpython/pull/13132
+        max_workers = min(max_workers, 61)
+      multiprocessing_pool = multiprocessing.Pool(processes=max_workers)
+    return multiprocessing_pool.map(mp_run_process, [(cmd, env, route_stdout_to_temp_files_suffix) for cmd in commands], chunksize=1)
 
   std_outs = []
-
-  if route_stdout_to_temp_files_suffix and pipe_stdout:
-    raise Exception('Cannot simultaneously pipe stdout to file and a string! Choose one or the other.')
 
   # TODO: Experiment with registering a signal handler here to see if that helps with Ctrl-C locking up the command prompt
   # when multiple child processes have been spawned.
@@ -169,59 +177,56 @@ def run_multiple_processes(commands,
   #   sys.exit(1)
   # signal.signal(signal.SIGINT, signal_handler)
 
-  with ToolchainProfiler.profile_block('run_multiple_processes'):
-    processes = []
-    num_parallel_processes = get_num_cores()
-    temp_files = get_temp_files()
-    i = 0
-    num_completed = 0
+  # Map containing all currently running processes.
+  # command index -> proc/Popen object
+  processes = {}
 
-    while num_completed < len(commands):
-      if i < len(commands) and len(processes) < num_parallel_processes:
-        # Not enough parallel processes running, spawn a new one.
-        std_out = temp_files.get(route_stdout_to_temp_files_suffix) if route_stdout_to_temp_files_suffix else (subprocess.PIPE if pipe_stdout else None)
-        if DEBUG:
-          logger.debug('Running subprocess %d/%d: %s' % (i + 1, len(commands), ' '.join(commands[i])))
-        print_compiler_stage(commands[i])
-        processes += [(i, subprocess.Popen(commands[i], stdout=std_out, stderr=subprocess.PIPE if pipe_stdout else None, env=env, cwd=cwd))]
-        if route_stdout_to_temp_files_suffix:
-          std_outs += [(i, std_out.name)]
-        i += 1
+  def get_finished_process():
+    while True:
+      for idx, proc in processes.items():
+        if proc.poll() is not None:
+          return idx
+      # All processes still running; wait a short while for the first
+      # (oldest) process to finish, then look again if any process has completed.
+      idx, proc = next(iter(processes.items()))
+      try:
+        proc.communicate(timeout=0.2)
+        return idx
+      except subprocess.TimeoutExpired:
+        pass
+
+  num_parallel_processes = get_num_cores()
+  temp_files = get_temp_files()
+  i = 0
+  num_completed = 0
+  while num_completed < len(commands):
+    if i < len(commands) and len(processes) < num_parallel_processes:
+      # Not enough parallel processes running, spawn a new one.
+      if route_stdout_to_temp_files_suffix:
+        stdout = temp_files.get(route_stdout_to_temp_files_suffix)
       else:
-        # Not spawning a new process (Too many commands running in parallel, or no commands left): find if a process has finished.
-        def get_finished_process():
-          while True:
-            j = 0
-            while j < len(processes):
-              if processes[j][1].poll() is not None:
-                out, err = processes[j][1].communicate()
-                return (j, out.decode('UTF-8') if out else '', err.decode('UTF-8') if err else '')
-              j += 1
-            # All processes still running; wait a short while for the first (oldest) process to finish,
-            # then look again if any process has completed.
-            try:
-              out, err = processes[0][1].communicate(0.2)
-              return (0, out.decode('UTF-8') if out else '', err.decode('UTF-8') if err else '')
-            except subprocess.TimeoutExpired:
-              pass
+        stdout = None
+      if DEBUG:
+        logger.debug('Running subprocess %d/%d: %s' % (i + 1, len(commands), ' '.join(commands[i])))
+      print_compiler_stage(commands[i])
+      proc = subprocess.Popen(commands[i], stdout=stdout, stderr=None, env=env)
+      processes[i] = proc
+      if route_stdout_to_temp_files_suffix:
+        std_outs.append((i, stdout.name))
+      i += 1
+    else:
+      # Not spawning a new process (Too many commands running in parallel, or
+      # no commands left): find if a process has finished.
+      idx = get_finished_process()
+      finished_process = processes.pop(idx)
+      if finished_process.returncode != 0:
+        exit_with_error('Subprocess %d/%d failed (%s)! (cmdline: %s)' % (idx + 1, len(commands), returncode_to_str(finished_process.returncode), shlex_join(commands[idx])))
+      num_completed += 1
 
-        j, out, err = get_finished_process()
-        idx, finished_process = processes[j]
-        del processes[j]
-        if pipe_stdout:
-          std_outs += [(idx, out)]
-        if check and finished_process.returncode != 0:
-          if out:
-            logger.info(out)
-          if err:
-            logger.error(err)
-
-          raise Exception('Subprocess %d/%d failed (%s)! (cmdline: %s)' % (idx + 1, len(commands), returncode_to_str(finished_process.returncode), shlex_join(commands[idx])))
-        num_completed += 1
-
-  # If processes finished out of order, sort the results to the order of the input.
-  std_outs.sort(key=lambda x: x[0])
-  return [x[1] for x in std_outs]
+  if route_stdout_to_temp_files_suffix:
+    # If processes finished out of order, sort the results to the order of the input.
+    std_outs.sort(key=lambda x: x[0])
+    return [x[1] for x in std_outs]
 
 
 def check_call(cmd, *args, **kw):
@@ -255,41 +260,61 @@ def get_npm_cmd(name):
   return cmd
 
 
+# TODO(sbc): Replace with functools.cache, once we update to python 3.7
+def memoize(func):
+  called = False
+  result = None
+
+  @wraps(func)
+  def helper():
+    nonlocal called, result
+    if not called:
+      result = func()
+      called = True
+    return result
+
+  return helper
+
+
+@memoize
 def get_clang_version():
-  if not hasattr(get_clang_version, 'found_version'):
-    if not os.path.exists(CLANG_CC):
-      exit_with_error('clang executable not found at `%s`' % CLANG_CC)
-    proc = check_call([CLANG_CC, '--version'], stdout=PIPE)
-    m = re.search(r'[Vv]ersion\s+(\d+\.\d+)', proc.stdout)
-    get_clang_version.found_version = m and m.group(1)
-  return get_clang_version.found_version
+  if not os.path.exists(CLANG_CC):
+    exit_with_error('clang executable not found at `%s`' % CLANG_CC)
+  proc = check_call([CLANG_CC, '--version'], stdout=PIPE)
+  m = re.search(r'[Vv]ersion\s+(\d+\.\d+)', proc.stdout)
+  return m and m.group(1)
 
 
 def check_llvm_version():
   actual = get_clang_version()
-  if EXPECTED_LLVM_VERSION in actual:
+  if actual.startswith('%d.' % EXPECTED_LLVM_VERSION):
     return True
+  # When running in CI environment we also silently allow the next major
+  # version of LLVM here so that new versions of LLVM can be rolled in
+  # without disruption.
+  if 'BUILDBOT_BUILDNUMBER' in os.environ:
+    if actual.startswith('%d.' % (EXPECTED_LLVM_VERSION + 1)):
+      return True
   diagnostics.warning('version-check', 'LLVM version for clang executable "%s" appears incorrect (seeing "%s", expected "%s")', CLANG_CC, actual, EXPECTED_LLVM_VERSION)
   return False
 
 
-def get_llc_targets():
-  if not os.path.exists(LLVM_COMPILER):
-    exit_with_error('llc executable not found at `%s`' % LLVM_COMPILER)
+def get_clang_targets():
+  if not os.path.exists(CLANG_CC):
+    exit_with_error('clang executable not found at `%s`' % CLANG_CC)
   try:
-    llc_version_info = run_process([LLVM_COMPILER, '--version'], stdout=PIPE).stdout
+    target_info = run_process([CLANG_CC, '-print-targets'], stdout=PIPE).stdout
   except subprocess.CalledProcessError:
-    exit_with_error('error running `llc --version`.  Check your llvm installation (%s)' % LLVM_COMPILER)
-  if 'Registered Targets:' not in llc_version_info:
-    exit_with_error('error parsing output of `llc --version`.  Check your llvm installation (%s)' % LLVM_COMPILER)
-  pre, targets = llc_version_info.split('Registered Targets:')
-  return targets
+    exit_with_error('error running `clang -print-targets`.  Check your llvm installation (%s)' % CLANG_CC)
+  if 'Registered Targets:' not in target_info:
+    exit_with_error('error parsing output of `clang -print-targets`.  Check your llvm installation (%s)' % CLANG_CC)
+  return target_info.split('Registered Targets:')[1]
 
 
 def check_llvm():
-  targets = get_llc_targets()
-  if 'wasm32' not in targets and 'WebAssembly 32-bit' not in targets:
-    logger.critical('LLVM has not been built with the WebAssembly backend, llc reports:')
+  targets = get_clang_targets()
+  if 'wasm32' not in targets:
+    logger.critical('LLVM has not been built with the WebAssembly backend, clang reports:')
     print('===========================================================================', file=sys.stderr)
     print(targets, file=sys.stderr)
     print('===========================================================================', file=sys.stderr)
@@ -311,6 +336,7 @@ def env_with_node_in_path():
   return env
 
 
+@memoize
 def check_node_version():
   try:
     actual = run_process(config.NODE_JS + ['--version'], stdout=PIPE).stdout.strip()
@@ -319,14 +345,44 @@ def check_node_version():
     version = tuple(int(v) for v in version)
   except Exception as e:
     diagnostics.warning('version-check', 'cannot check node version: %s', e)
-    return False
+    return
 
   if version < MINIMUM_NODE_VERSION:
     expected = '.'.join(str(v) for v in MINIMUM_NODE_VERSION)
     diagnostics.warning('version-check', f'node version appears too old (seeing "{actual}", expected "v{expected}")')
-    return False
 
-  return True
+  return version
+
+
+def node_bigint_flags():
+  node_version = check_node_version()
+  # wasm bigint was enabled by default in node v16.
+  if node_version and node_version < (16, 0, 0):
+    return ['--experimental-wasm-bigint']
+  else:
+    return []
+
+
+def node_memory64_flags():
+  return ['--experimental-wasm-memory64']
+
+
+def node_pthread_flags():
+  node_version = check_node_version()
+  # bulk memory and wasm threads were enabled by default in node v16.
+  if node_version and node_version < (16, 0, 0):
+    return ['--experimental-wasm-bulk-memory', '--experimental-wasm-threads']
+  else:
+    return []
+
+
+@memoize
+@ToolchainProfiler.profile()
+def check_node():
+  try:
+    run_process(config.NODE_JS + ['-e', 'console.log("hello")'], stdout=PIPE)
+  except Exception as e:
+    exit_with_error('The configured node executable (%s) does not seem to work, check the paths in %s (%s)', config.NODE_JS, config.EM_CONFIG, str(e))
 
 
 def set_version_globals():
@@ -338,11 +394,7 @@ def set_version_globals():
 
 
 def generate_sanity():
-  sanity_file_content = f'{EMSCRIPTEN_VERSION}|{config.LLVM_ROOT}|{get_clang_version()}'
-  config_data = utils.read_file(config.EM_CONFIG)
-  checksum = binascii.crc32(config_data.encode())
-  sanity_file_content += '|%#x\n' % checksum
-  return sanity_file_content
+  return f'{EMSCRIPTEN_VERSION}|{config.LLVM_ROOT}|{get_clang_version()}'
 
 
 def perform_sanity_checks():
@@ -361,11 +413,7 @@ def perform_sanity_checks():
   if not llvm_ok:
     exit_with_error('failing sanity checks due to previous llvm failure')
 
-  with ToolchainProfiler.profile_block('sanity compiler_engine'):
-    try:
-      run_process(config.NODE_JS + ['-e', 'console.log("hello")'], stdout=PIPE)
-    except Exception as e:
-      exit_with_error('The configured node executable (%s) does not seem to work, check the paths in %s (%s)', config.NODE_JS, config.EM_CONFIG, str(e))
+  check_node()
 
   with ToolchainProfiler.profile_block('sanity LLVM'):
     for cmd in [CLANG_CC, LLVM_AR, LLVM_NM]:
@@ -406,23 +454,35 @@ def check_sanity(force=False):
 
   expected = generate_sanity()
 
-  sanity_file = Cache.get_path('sanity.txt')
+  sanity_file = cache.get_path('sanity.txt')
 
   def sanity_is_correct():
-    if os.path.exists(sanity_file):
+    sanity_data = None
+    # We can't simply check for the existence of sanity_file and then read from
+    # it here because we don't hold the cache lock yet and some other process
+    # could clear the cache between checking for, and reading from, the file.
+    try:
       sanity_data = utils.read_file(sanity_file)
-      if sanity_data == expected:
-        logger.debug(f'sanity file up-to-date: {sanity_file}')
-        if force:
-          perform_sanity_checks()
-        return True # all is well
+    except Exception:
+      pass
+    if sanity_data == expected:
+      logger.debug(f'sanity file up-to-date: {sanity_file}')
+      # Even if the sanity file is up-to-date we still need to at least
+      # check the llvm version. This comes at no extra performance cost
+      # since the version was already extracted and cached by the
+      # generate_sanity() call above.
+      if force:
+        perform_sanity_checks()
+      else:
+        check_llvm_version()
+      return True # all is well
     return False
 
   if sanity_is_correct():
     # Early return without taking the cache lock
     return
 
-  with Cache.lock('sanity'):
+  with cache.lock('sanity'):
     # Check again once the cache lock as aquired
     if sanity_is_correct():
       return
@@ -432,7 +492,7 @@ def check_sanity(force=False):
       logger.info('old sanity: %s' % sanity_data)
       logger.info('new sanity: %s' % expected)
       logger.info('(Emscripten: config changed, clearing cache)')
-      Cache.erase()
+      cache.erase()
     else:
       logger.debug(f'sanity file not found: {sanity_file}')
 
@@ -483,6 +543,7 @@ def replace_or_append_suffix(filename, new_suffix):
 
 # Temp dir. Create a random one, unless EMCC_DEBUG is set, in which case use the canonical
 # temp directory (TEMP_DIR/emscripten_temp).
+@memoize
 def get_emscripten_temp_dir():
   """Returns a path to EMSCRIPTEN_TEMP_DIR, creating one if it didn't exist."""
   global EMSCRIPTEN_TEMP_DIR
@@ -492,7 +553,7 @@ def get_emscripten_temp_dir():
     if not DEBUG_SAVE:
       def prepare_to_clean_temp(d):
         def clean_temp():
-          try_delete(d)
+          utils.delete_dir(d)
 
         atexit.register(clean_temp)
       # this global var might change later
@@ -537,6 +598,7 @@ def setup_temp_dirs():
       atexit.register(lock.release)
 
 
+@memoize
 def get_temp_files():
   if DEBUG_SAVE:
     # In debug mode store all temp files in the emscripten-specific temp dir
@@ -564,11 +626,13 @@ def mangle_c_symbol_name(name):
 
 
 def demangle_c_symbol_name(name):
-  return name[1:] if name.startswith('_') else '$' + name
+  if not is_c_symbol(name):
+    return '$' + name
+  return name[1:] if name.startswith('_') else name
 
 
 def is_c_symbol(name):
-  return name.startswith('_')
+  return name.startswith('_') or name in settings.WASM_SYSTEM_EXPORTS
 
 
 def treat_as_user_function(name):
@@ -594,11 +658,6 @@ def asmjs_mangle(name):
   return name
 
 
-def reconfigure_cache():
-  global Cache
-  Cache = cache.Cache(config.CACHE)
-
-
 def suffix(name):
   """Return the file extension"""
   return os.path.splitext(name)[1]
@@ -622,7 +681,7 @@ def strip_prefix(string, prefix):
 
 
 def make_writable(filename):
-  assert(os.path.isfile(filename))
+  assert os.path.isfile(filename)
   old_mode = stat.S_IMODE(os.stat(filename).st_mode)
   os.chmod(filename, old_mode | stat.S_IWUSR)
 
@@ -649,7 +708,7 @@ def read_and_preprocess(filename, expand_macros=False):
   # Create a settings file with the current settings to pass to the JS preprocessor
 
   settings_str = ''
-  for key, value in settings.dict().items():
+  for key, value in settings.external_dict().items():
     assert key == key.upper()  # should only ever be uppercase keys in settings
     jsoned = json.dumps(value, sort_keys=True)
     settings_str += f'var {key} = {jsoned};\n'
@@ -700,15 +759,10 @@ set_version_globals()
 
 CLANG_CC = os.path.expanduser(build_clang_tool_path(exe_suffix('clang')))
 CLANG_CXX = os.path.expanduser(build_clang_tool_path(exe_suffix('clang++')))
-LLVM_LINK = build_llvm_tool_path(exe_suffix('llvm-link'))
 LLVM_AR = build_llvm_tool_path(exe_suffix('llvm-ar'))
 LLVM_DWP = build_llvm_tool_path(exe_suffix('llvm-dwp'))
 LLVM_RANLIB = build_llvm_tool_path(exe_suffix('llvm-ranlib'))
-LLVM_OPT = os.path.expanduser(build_llvm_tool_path(exe_suffix('opt')))
 LLVM_NM = os.path.expanduser(build_llvm_tool_path(exe_suffix('llvm-nm')))
-LLVM_MC = os.path.expanduser(build_llvm_tool_path(exe_suffix('llvm-mc')))
-LLVM_INTERPRETER = os.path.expanduser(build_llvm_tool_path(exe_suffix('lli')))
-LLVM_COMPILER = os.path.expanduser(build_llvm_tool_path(exe_suffix('llc')))
 LLVM_DWARFDUMP = os.path.expanduser(build_llvm_tool_path(exe_suffix('llvm-dwarfdump')))
 LLVM_OBJCOPY = os.path.expanduser(build_llvm_tool_path(exe_suffix('llvm-objcopy')))
 LLVM_STRIP = os.path.expanduser(build_llvm_tool_path(exe_suffix('llvm-strip')))
@@ -724,8 +778,12 @@ EM_NM = bat_suffix(path_from_root('emnm'))
 FILE_PACKAGER = bat_suffix(path_from_root('tools/file_packager'))
 WASM_SOURCEMAP = bat_suffix(path_from_root('tools/wasm-sourcemap'))
 
+# These get set by setup_temp_dirs
+TEMP_DIR = None
+EMSCRIPTEN_TEMP_DIR = None
+
 setup_temp_dirs()
 
-Cache = cache.Cache(config.CACHE)
+cache.setup(config.CACHE)
 
 PRINT_STAGES = int(os.getenv('EMCC_VERBOSE', '0'))

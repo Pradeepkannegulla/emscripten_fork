@@ -133,7 +133,7 @@ var LibraryEmVal = {
     view = Emval.toValue(view);
     // using for..loop is faster than Array.from
     var a = new Array(view.length);
-    for (i = 0; i < view.length; i++) a[i] = view[i];
+    for (var i = 0; i < view.length; i++) a[i] = view[i];
     return Emval.toHandle(a);
   },
 
@@ -188,7 +188,7 @@ var LibraryEmVal = {
     return function(constructor, argTypes, args) {
       argsList[0] = constructor;
       for (var i = 0; i < argCount; ++i) {
-        var argType = requireRegisteredType({{{ makeGetValue('argTypes', 'i * POINTER_SIZE', '*') }}}, 'parameter ' + i);
+        var argType = requireRegisteredType({{{ makeGetValue('argTypes', 'i * ' + POINTER_SIZE, '*') }}}, 'parameter ' + i);
         argsList[i + 1] = argType['readValueFromPointer'](args);
         args += argType['argPackAdvance'];
       }
@@ -402,7 +402,7 @@ var LibraryEmVal = {
   $emval_lookupTypes: function(argCount, argTypes) {
     var a = new Array(argCount);
     for (var i = 0; i < argCount; ++i) {
-      a[i] = requireRegisteredType({{{ makeGetValue('argTypes', 'i * POINTER_SIZE', '*') }}},
+      a[i] = requireRegisteredType({{{ makeGetValue('argTypes', 'i * ' + POINTER_SIZE, '*') }}},
                                    "parameter " + i);
     }
     return a;

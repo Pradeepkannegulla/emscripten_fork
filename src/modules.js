@@ -50,7 +50,9 @@ global.LibraryManager = {
       'library_stack_trace.js',
       'library_wasi.js',
       'library_dylink.js',
+      'library_makeDynCall.js',
       'library_eventloop.js',
+      'library_promise.js',
     ];
 
     if (LINK_AS_CXX) {
@@ -70,6 +72,10 @@ global.LibraryManager = {
       libraries.push('library_memoryprofiler.js');
     }
 
+    if (AUTODEBUG) {
+      libraries.push('library_autodebug.js');
+    }
+
     if (FILESYSTEM) {
       // Core filesystem libraries (always linked against, unless -sFILESYSTEM=0 is specified)
       libraries = libraries.concat([
@@ -86,6 +92,8 @@ global.LibraryManager = {
           libraries.push('library_nodefs.js');
         }
         libraries.push('library_noderawfs.js');
+        // NODERAWFS overwrites library_path.js
+        libraries.push('library_nodepath.js');
       }
     } else if (WASMFS) {
       libraries.push('library_wasmfs.js');
@@ -186,7 +194,6 @@ global.LibraryManager = {
           printErr('processing system library: ' + filename);
         }
       }
-      const src = read(filename);
       let origLibrary = undefined;
       let processed = undefined;
       // When we parse user libraries also set `__user` attribute
@@ -204,27 +211,19 @@ global.LibraryManager = {
         });
       }
       try {
-        processed = processMacros(preprocess(src, filename));
-        eval(processed);
+        processed = processMacros(preprocess(filename));
+        vm.runInThisContext(processed, { filename: filename.replace(/\.\w+$/, '.preprocessed$&') });
       } catch (e) {
-        const details = [e, e.lineNumber ? `line number: ${e.lineNumber}` : ''];
+        error(`failure to execute js library "${filename}":`);
         if (VERBOSE) {
-          details.push((e.stack || '').toString().replace('Object.<anonymous>', filename));
-        }
-        if (processed) {
-          error(`failure to execute js library "${filename}": ${details}`);
-          if (VERBOSE) {
+          const orig = read(filename);
+          if (processed) {
             error(`preprocessed source (you can run a js engine on this to get a clearer error message sometimes):\n=============\n${processed}\n=============`);
           } else {
-            error('use -sVERBOSE to see more details');
+            error(`original source:\n=============\n${orig}\n=============`);
           }
         } else {
-          error(`failure to process js library "${filename}": ${details}`);
-          if (VERBOSE) {
-            error(`original source:\n=============\n${src}\n=============`);
-          } else {
-            error('use -sVERBOSE to see more details');
-          }
+          error('use -sVERBOSE to see more details');
         }
         throw e;
       } finally {
@@ -234,7 +233,7 @@ global.LibraryManager = {
       }
     }
 
-    for (const ident in this.library) {
+    for (const ident of Object.keys(this.library)) {
       if (isJsLibraryConfigIdentifier(ident)) {
         const index = ident.lastIndexOf('__');
         const basename = ident.slice(0, index);
@@ -270,41 +269,47 @@ function isInternalSymbol(ident) {
   return ident + '__internal' in LibraryManager.library;
 }
 
+function getUnusedLibarySymbols() {
+  const librarySymbolSet = new Set(librarySymbols);
+  const missingSyms = new Set();
+  for (const [ident, value] of Object.entries(LibraryManager.library)) {
+    if (typeof value === 'function' || typeof value === 'number') {
+      if (ident[0] === '$' && !isJsLibraryConfigIdentifier(ident) && !isInternalSymbol(ident)) {
+        const name = ident.substr(1);
+        if (!librarySymbolSet.has(name)) {
+          missingSyms.add(name);
+        }
+      }
+    }
+  }
+  return missingSyms;
+}
+
 // When running with ASSERTIONS enabled we create stubs for each library
 // function that that was not included in the build.  This gives useful errors
 // when library dependencies are missing from `__deps` or depended on without
 // being added to DEFAULT_LIBRARY_FUNCS_TO_INCLUDE
 // TODO(sbc): These errors could potentially be generated at build time via
 // some kind of acorn pass that searched for uses of these missing symbols.
-function addMissingLibraryStubs() {
-  if (!ASSERTIONS) return '';
+function addMissingLibraryStubs(unusedLibSymbols) {
   let rtn = '';
-  const librarySymbolSet = new Set(librarySymbols);
-  const missingSyms = [];
-  for (const ident in LibraryManager.library) {
-    if (typeof LibraryManager.library[ident] === 'function' || typeof LibraryManager.library[ident] === 'number') {
-      if (ident[0] === '$' && !isJsLibraryConfigIdentifier(ident) && !isInternalSymbol(ident)) {
-        const name = ident.substr(1);
-        if (!librarySymbolSet.has(name)) {
-          missingSyms.push(name);
-        }
-      }
-    }
+  rtn += 'var missingLibrarySymbols = [\n';
+  for (const sym of unusedLibSymbols) {
+    rtn += `  '${sym}',\n`;
   }
-  if (missingSyms.length) {
-    rtn += 'var missingLibrarySymbols = [\n';
-    for (const sym of missingSyms) {
-      rtn += `  '${sym}',\n`;
-    }
-    rtn += '];\n';
-    rtn += 'missingLibrarySymbols.forEach(missingLibrarySymbol)\n';
-  }
+  rtn += '];\n';
+  rtn += 'missingLibrarySymbols.forEach(missingLibrarySymbol)\n';
   return rtn;
 }
 
 // export parts of the JS runtime that the user asked for
 function exportRuntime() {
   const EXPORTED_RUNTIME_METHODS_SET = new Set(EXPORTED_RUNTIME_METHODS);
+
+  const legacyRuntimeElements = new Map([
+    ['print', 'out'],
+    ['printErr', 'err'],
+  ]);
 
   // optionally export something.
   // in ASSERTIONS mode we show a useful error if it is used without
@@ -318,10 +323,8 @@ function exportRuntime() {
       if (isFSPrefixed(exported)) {
         // this is a filesystem value, FS.x exported as FS_x
         exported = 'FS.' + exported.substr(3);
-      } else if (exported === 'print') {
-        exported = 'out';
-      } else if (exported === 'printErr') {
-        exported = 'err';
+      } else if (legacyRuntimeElements.has(exported)) {
+        exported = legacyRuntimeElements.get(exported);
       }
       return `Module["${name}"] = ${exported};`;
     }
@@ -350,24 +353,17 @@ function exportRuntime() {
     'FS_createLink',
     'FS_createDevice',
     'FS_unlink',
-    'getLEB',
-    'getFunctionTables',
-    'alignFunctionTables',
-    'registerFunctions',
-    'prettyPrint',
-    'getCompilerSetting',
-    'print',
-    'printErr',
+    'out',
+    'err',
     'callMain',
     'abort',
     'keepRuntimeAlive',
     'wasmMemory',
-    // These last three are actually native wasm functions these days but we
-    // allow exporting them via EXPORTED_RUNTIME_METHODS for backwards compat.
-    'stackSave',
-    'stackRestore',
-    'stackAlloc',
   ];
+
+  // These are actually native wasm functions these days but we allow exporting
+  // them via EXPORTED_RUNTIME_METHODS for backwards compat.
+  runtimeElements = runtimeElements.concat(WASM_SYSTEM_EXPORTS);
 
   if (USE_PTHREADS && ALLOW_MEMORY_GROWTH) {
     runtimeElements = runtimeElements.concat([
@@ -399,6 +395,14 @@ function exportRuntime() {
     runtimeElements.push('tryParseAsDataURI');
   }
 
+  if (RETAIN_COMPILER_SETTINGS) {
+    runtimeElements.push('getCompilerSetting')
+  }
+
+  if (RUNTIME_DEBUG) {
+    runtimeElements.push('prettyPrint')
+  }
+
   // dynCall_* methods are not hardcoded here, as they
   // depend on the file being compiled. check for them
   // and add them.
@@ -409,11 +413,20 @@ function exportRuntime() {
     }
   }
 
+  // Only export legacy runtime elements when explicitly
+  // requested.
+  for (const name of EXPORTED_RUNTIME_METHODS_SET) {
+    if (legacyRuntimeElements.has(name)) {
+      const newName = legacyRuntimeElements.get(name);
+      warn(`deprecated item in EXPORTED_RUNTIME_METHODS: ${name} use ${newName} instead.`);
+      runtimeElements.push(name);
+    }
+  }
 
   // Add JS library elements such as FS, GL, ENV, etc. These are prefixed with
   // '$ which indicates they are JS methods.
-  const runtimeElementsSet = new Set(runtimeElements);
-  for (const ident in LibraryManager.library) {
+  let runtimeElementsSet = new Set(runtimeElements);
+  for (const ident of Object.keys(LibraryManager.library)) {
     if (ident[0] === '$' && !isJsLibraryConfigIdentifier(ident) && !isInternalSymbol(ident)) {
       const jsname = ident.substr(1);
       assert(!runtimeElementsSet.has(jsname), 'runtimeElements contains library symbol: ' + ident);
@@ -421,34 +434,40 @@ function exportRuntime() {
     }
   }
 
-  let unexportedStubs = '';
-  if (ASSERTIONS) {
-    // check all exported things exist, warn about typos
-    const runtimeElementsSet = new Set(runtimeElements);
-    for (const name of EXPORTED_RUNTIME_METHODS_SET) {
-      if (!runtimeElementsSet.has(name)) {
-        warn(`invalid item in EXPORTED_RUNTIME_METHODS: ${name}`);
-      }
+  // check all exported things exist, warn about typos
+  runtimeElementsSet = new Set(runtimeElements);
+  for (const name of EXPORTED_RUNTIME_METHODS_SET) {
+    if (!runtimeElementsSet.has(name)) {
+      warn(`invalid item in EXPORTED_RUNTIME_METHODS: ${name}`);
+    }
+  }
+
+  const exports = runtimeElements.map(maybeExport);
+  const results = exports.filter((name) => name);
+
+  if (ASSERTIONS && !EXPORT_ALL) {
+    const unusedLibSymbols = getUnusedLibarySymbols();
+    if (unusedLibSymbols.size) {
+      results.push(addMissingLibraryStubs(unusedLibSymbols));
     }
 
     const unexported = [];
     for (const name of runtimeElements) {
-      if (!EXPORTED_RUNTIME_METHODS_SET.has(name)) {
+      if (!EXPORTED_RUNTIME_METHODS_SET.has(name) && !unusedLibSymbols.has(name)) {
         unexported.push(name);
       }
     }
 
-    if (unexported.length) {
-      unexportedStubs += 'var unexportedRuntimeSymbols = [\n';
+    if (unexported.length || unusedLibSymbols.size) {
+      let unexportedStubs = 'var unexportedSymbols = [\n';
       for (const sym of unexported) {
         unexportedStubs += `  '${sym}',\n`;
       }
       unexportedStubs += '];\n';
-      unexportedStubs += 'unexportedRuntimeSymbols.forEach(unexportedRuntimeSymbol);\n';
+      unexportedStubs += 'unexportedSymbols.forEach(unexportedRuntimeSymbol);\n';
+      results.push(unexportedStubs);
     }
   }
 
-  let exports = runtimeElements.map((name) => maybeExport(name));
-  exports = exports.filter((name) => name);
-  return exports.join('\n') + '\n' + unexportedStubs + addMissingLibraryStubs();
+  return results.join('\n') + '\n';
 }

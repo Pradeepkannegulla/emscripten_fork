@@ -25,67 +25,16 @@ mergeInto(LibraryManager.library, {
     '$runtimeKeepalivePush', '$runtimeKeepalivePop'
 #endif
   ],
+
   $Asyncify: {
-    State: {
-      Normal: 0,
-      Unwinding: 1,
-      Rewinding: 2,
-      Disabled: 3,
-    },
-    state: 0,
-    StackSize: {{{ ASYNCIFY_STACK_SIZE }}},
-    currData: null,
-    // The return value passed to wakeUp() in
-    // Asyncify.handleSleep(function(wakeUp){...}) is stored here,
-    // so we can return it later from the C function that called
-    // Asyncify.handleSleep() after rewinding finishes.
-    handleSleepReturnValue: 0,
-    // We must track which wasm exports are called into and
-    // exited, so that we know where the call stack began,
-    // which is where we must call to rewind it.
-    exportCallStack: [],
-    callStackNameToId: {},
-    callStackIdToName: {},
-    callStackId: 0,
-    asyncPromiseHandlers: null, // { resolve, reject } pair for when *all* asynchronicity is done
-    sleepCallbacks: [], // functions to call every time we sleep
-
-#if ASYNCIFY == 2
-    // TODO: Stack switching support could be implemented without all the
-    //       asyncify infrastructure, perhaps as code on the size instead of
-    //       ifdefs. That might be cleaner, and it would avoid overhead like the
-    //       malloc() asyncify does (we could ifdef it out, but it's even more
-    //       ifdefing).
-
-    // The global suspender object used with the VM's stack switching Promise
-    // API.
-    suspender: null,
-    // The promise that is being suspended on in the VM atm, or null.
-    promise: null,
-    // The function we should call to resolve the promise at the right time.
-    promiseResolve: null,
-#endif
-
-    getCallStackId: function(funcName) {
-      var id = Asyncify.callStackNameToId[funcName];
-      if (id === undefined) {
-        id = Asyncify.callStackId++;
-        Asyncify.callStackNameToId[funcName] = id;
-        Asyncify.callStackIdToName[id] = funcName;
-      }
-      return id;
-    },
-
+    //
+    // Asyncify code that is shared between mode 1 (original) and mode 2 (JSPI).
+    //
     instrumentWasmImports: function(imports) {
 #if ASYNCIFY_DEBUG
-      err('asyncify instrumenting imports');
+      dbg('asyncify instrumenting imports');
 #endif
-#if ASYNCIFY == 2
-      // TODO we could perhaps add an init function and put this there, but
-      //      this should work for now.
-      Asyncify.suspender = new WebAssembly.Suspender();
-#endif
-      var ASYNCIFY_IMPORTS = {{{ JSON.stringify(ASYNCIFY_IMPORTS) }}}.map((x) => x.split('.')[1]);
+      var ASYNCIFY_IMPORTS = {{{ JSON.stringify(ASYNCIFY_IMPORTS.map((x) => x.split('.')[1])) }}};
       for (var x in imports) {
         (function(x) {
           var original = imports[x];
@@ -94,22 +43,22 @@ mergeInto(LibraryManager.library, {
             var isAsyncifyImport = ASYNCIFY_IMPORTS.indexOf(x) >= 0 ||
                                    x.startsWith('__asyncjs__');
 #if ASYNCIFY == 2
+            // Wrap async imports with a suspending WebAssembly function.
             if (isAsyncifyImport) {
 #if ASSERTIONS
-              if (!sig) {
-                throw new Error('Missing __sig for ' + x);
-              }
+              assert(sig, 'Missing __sig for ' + x);
 #endif
-              var type = sigToWasmTypes(sig, original);
-              // Regardless of the original result type of the function, as it
-              // is now expected to potentially return a Promise, change it to
-              // an externref.
-              type.results = ['externref'];
+              var type = sigToWasmTypes(sig);
 #if ASYNCIFY_DEBUG
-              err('asyncify: suspendOnReturnedPromise for', x, original);
+              dbg('asyncify: suspendOnReturnedPromise for', x, original);
 #endif
-              imports[x] = original = Asyncify.suspender.suspendOnReturnedPromise(
-                new WebAssembly.Function(type, original)
+              // Add space for the suspender promise that will be used in the
+              // Wasm wrapper function.
+              type.parameters.unshift('externref');
+              imports[x] = original = new WebAssembly.Function(
+                type,
+                original,
+                { suspending: 'first' }
               );
             }
 #endif
@@ -153,39 +102,59 @@ mergeInto(LibraryManager.library, {
 
     instrumentWasmExports: function(exports) {
 #if ASYNCIFY_DEBUG
-      err('asyncify instrumenting exports');
+      dbg('asyncify instrumenting exports');
+#endif
+#if ASYNCIFY == 2
+      var ASYNCIFY_EXPORTS = {{{ JSON.stringify(ASYNCIFY_EXPORTS) }}};
 #endif
       var ret = {};
       for (var x in exports) {
         (function(x) {
           var original = exports[x];
-#if ASYNCIFY == 2
-          // TODO: need a list of all suspending exports.
-          if (x === 'main') {
-#if ASYNCIFY_DEBUG
-            err('asyncify: returnPromiseOnSuspend for', x, original);
-#endif
-            ret[x] = original = Asyncify.suspender.returnPromiseOnSuspend(original);
-          }
-#endif
           if (typeof original == 'function') {
+#if ASYNCIFY == 2
+            // Wrap all exports with a promising WebAssembly function.
+            var isAsyncifyExport = ASYNCIFY_EXPORTS.indexOf(x) >= 0;
+            if (isAsyncifyExport) {
+#if ASYNCIFY_DEBUG
+              dbg('asyncify: returnPromiseOnSuspend for', x, original);
+#endif
+              var type = WebAssembly.Function.type(original);
+              var parameters = type.parameters;
+              var results = type.results;
+#if ASSERTIONS
+              assert(results.length !== 0, 'There must be a return result')
+              assert(parameters[0] === 'externref', 'First param must be externref.');
+#endif
+              // Remove the extern ref.
+              parameters.shift();
+              original = new WebAssembly.Function(
+                { parameters , results: ['externref'] },
+                original,
+                { promising : 'first' });
+            }
+#endif
             ret[x] = function() {
 #if ASYNCIFY_DEBUG >= 2
-              err('ASYNCIFY: ' + '  '.repeat(Asyncify.exportCallStack.length) + ' try ' + x);
+              dbg('ASYNCIFY: ' + '  '.repeat(Asyncify.exportCallStack.length) + ' try ' + x);
 #endif
+#if ASYNCIFY == 1
               Asyncify.exportCallStack.push(x);
               try {
+#endif
                 return original.apply(null, arguments);
+#if ASYNCIFY == 1
               } finally {
                 if (!ABORT) {
                   var y = Asyncify.exportCallStack.pop();
                   assert(y === x);
 #if ASYNCIFY_DEBUG >= 2
-                  err('ASYNCIFY: ' + '  '.repeat(Asyncify.exportCallStack.length) + ' finally ' + x);
+                  dbg('ASYNCIFY: ' + '  '.repeat(Asyncify.exportCallStack.length) + ' finally ' + x);
 #endif
                   Asyncify.maybeStopUnwind();
                 }
               }
+#endif
             };
 #if MAIN_MODULE
             ret[x].orig = original;
@@ -198,23 +167,63 @@ mergeInto(LibraryManager.library, {
       return ret;
     },
 
+#if ASYNCIFY == 1
+    //
+    // Original implementation of Asyncify.
+    //
+    State: {
+      Normal: 0,
+      Unwinding: 1,
+      Rewinding: 2,
+      Disabled: 3,
+    },
+    state: 0,
+    StackSize: {{{ ASYNCIFY_STACK_SIZE }}},
+    currData: null,
+    // The return value passed to wakeUp() in
+    // Asyncify.handleSleep(function(wakeUp){...}) is stored here,
+    // so we can return it later from the C function that called
+    // Asyncify.handleSleep() after rewinding finishes.
+    handleSleepReturnValue: 0,
+    // We must track which wasm exports are called into and
+    // exited, so that we know where the call stack began,
+    // which is where we must call to rewind it.
+    exportCallStack: [],
+    callStackNameToId: {},
+    callStackIdToName: {},
+    callStackId: 0,
+    asyncPromiseHandlers: null, // { resolve, reject } pair for when *all* asynchronicity is done
+    sleepCallbacks: [], // functions to call every time we sleep
+
+    getCallStackId: function(funcName) {
+      var id = Asyncify.callStackNameToId[funcName];
+      if (id === undefined) {
+        id = Asyncify.callStackId++;
+        Asyncify.callStackNameToId[funcName] = id;
+        Asyncify.callStackIdToName[id] = funcName;
+      }
+      return id;
+    },
+
     maybeStopUnwind: function() {
 #if ASYNCIFY_DEBUG
-      err('ASYNCIFY: maybe stop unwind', Asyncify.exportCallStack);
+      dbg('ASYNCIFY: maybe stop unwind', Asyncify.exportCallStack);
 #endif
       if (Asyncify.currData &&
           Asyncify.state === Asyncify.State.Unwinding &&
           Asyncify.exportCallStack.length === 0) {
         // We just finished unwinding.
+        // Be sure to set the state before calling any other functions to avoid
+        // possible infinite recursion here (For example in debug pthread builds
+        // the dbg() function itself can call back into WebAssembly to get the
+        // current pthread_self() pointer).
+        Asyncify.state = Asyncify.State.Normal;
 #if ASYNCIFY_DEBUG
-        err('ASYNCIFY: stop unwind');
+        dbg('ASYNCIFY: stop unwind');
 #endif
         {{{ runtimeKeepalivePush(); }}}
-        Asyncify.state = Asyncify.State.Normal;
         // Keep the runtime alive so that a re-wind can be done later.
-#if ASYNCIFY == 1
         runAndAbortIfError(_asyncify_stop_unwind);
-#endif
         if (typeof Fibers != 'undefined') {
           Fibers.trampoline();
         }
@@ -257,7 +266,7 @@ mergeInto(LibraryManager.library, {
     setDataRewindFunc: function(ptr) {
       var bottomOfCallStack = Asyncify.exportCallStack[0];
 #if ASYNCIFY_DEBUG >= 2
-      err('ASYNCIFY: setDataRewindFunc('+ptr+'), bottomOfCallStack is', bottomOfCallStack, new Error().stack);
+      dbg('ASYNCIFY: setDataRewindFunc('+ptr+'), bottomOfCallStack is', bottomOfCallStack, new Error().stack);
 #endif
       var rewindId = Asyncify.getCallStackId(bottomOfCallStack);
       {{{ makeSetValue('ptr', C_STRUCTS.asyncify_data_s.rewind_id, 'rewindId', 'i32') }}};
@@ -274,32 +283,21 @@ mergeInto(LibraryManager.library, {
       // Exported functions in side modules are not listed in `Module["asm"]`,
       // So we should use `resolveGlobalSymbol` helper function, which is defined in `library_dylink.js`.
       if (!func) {
-        func = resolveGlobalSymbol(name, false);
+        func = resolveGlobalSymbol(name, false).sym;
       }
 #endif
       return func;
     },
 
     doRewind: function(ptr) {
-#if ASYNCIFY == 2
-      // Resolve the promise. The VM will resume the wasm on the next event loop
-      // turn.
-      Asyncify.promiseResolve(Asyncify.handleSleepReturnValue);
-      setTimeout(() => {
-        // This timeout happens after the wasm has been resumed; we can stop
-        // artificially keeping the runtime alive at that time.
-        {{{ runtimeKeepalivePop(); }}}
-      });
-#else
       var start = Asyncify.getDataRewindFunc(ptr);
 #if ASYNCIFY_DEBUG
-      err('ASYNCIFY: start:', start);
+      dbg('ASYNCIFY: start:', start);
 #endif
       // Once we have rewound and the stack we no longer need to artificially
       // keep the runtime alive.
       {{{ runtimeKeepalivePop(); }}}
       return start();
-#endif
     },
 
     // This receives a function to call to start the async operation, and
@@ -311,7 +309,7 @@ mergeInto(LibraryManager.library, {
 #endif
       if (ABORT) return;
 #if ASYNCIFY_DEBUG
-      err('ASYNCIFY: handleSleep ' + Asyncify.state);
+      dbg('ASYNCIFY: handleSleep ' + Asyncify.state);
 #endif
       if (Asyncify.state === Asyncify.State.Normal) {
         // Prepare to sleep. Call startAsync, and see what happens:
@@ -320,12 +318,12 @@ mergeInto(LibraryManager.library, {
         // need to do anything.
         var reachedCallback = false;
         var reachedAfterCallback = false;
-        startAsync((handleSleepReturnValue) => {
+        startAsync((handleSleepReturnValue = 0) => {
 #if ASSERTIONS
           assert(!handleSleepReturnValue || typeof handleSleepReturnValue == 'number' || typeof handleSleepReturnValue == 'boolean'); // old emterpretify API supported other stuff
 #endif
           if (ABORT) return;
-          Asyncify.handleSleepReturnValue = handleSleepReturnValue || 0;
+          Asyncify.handleSleepReturnValue = handleSleepReturnValue;
           reachedCallback = true;
           if (!reachedAfterCallback) {
             // We are happening synchronously, so no need for async.
@@ -340,12 +338,10 @@ mergeInto(LibraryManager.library, {
           assert(!Asyncify.exportCallStack.length, 'Waking up (starting to rewind) must be done from JS, without compiled code on the stack.');
 #endif
 #if ASYNCIFY_DEBUG
-          err('ASYNCIFY: start rewind ' + Asyncify.currData);
+          dbg('ASYNCIFY: start rewind ' + Asyncify.currData);
 #endif
           Asyncify.state = Asyncify.State.Rewinding;
-#if ASYNCIFY == 1
           runAndAbortIfError(() => _asyncify_start_rewind(Asyncify.currData));
-#endif
           if (typeof Browser != 'undefined' && Browser.mainLoop.func) {
             Browser.mainLoop.resume();
           }
@@ -392,31 +388,20 @@ mergeInto(LibraryManager.library, {
           // TODO: reuse, don't alloc/free every sleep
           Asyncify.currData = Asyncify.allocateData();
 #if ASYNCIFY_DEBUG
-          err('ASYNCIFY: start unwind ' + Asyncify.currData);
+          dbg('ASYNCIFY: start unwind ' + Asyncify.currData);
 #endif
           if (typeof Browser != 'undefined' && Browser.mainLoop.func) {
             Browser.mainLoop.pause();
           }
-#if ASYNCIFY == 2
-          // Return a Promise to get the browser's stack switching logic to run.
-          return Asyncify.promise = new Promise((resolve, reject) => {
-            // Stash the resolve hook so we can call it at the proper time.
-            Asyncify.promiseResolve = resolve;
-            // TODO: handle rejection
-          });
-#else
           runAndAbortIfError(() => _asyncify_start_unwind(Asyncify.currData));
-#endif
         }
       } else if (Asyncify.state === Asyncify.State.Rewinding) {
         // Stop a resume.
 #if ASYNCIFY_DEBUG
-        err('ASYNCIFY: stop rewind');
+        dbg('ASYNCIFY: stop rewind');
 #endif
         Asyncify.state = Asyncify.State.Normal;
-#if ASYNCIFY == 1
         runAndAbortIfError(_asyncify_stop_rewind);
-#endif
         _free(Asyncify.currData);
         Asyncify.currData = null;
         // Call all sleep callbacks now that the sleep-resume is all done.
@@ -438,6 +423,28 @@ mergeInto(LibraryManager.library, {
         startAsync().then(wakeUp);
       });
     },
+
+#elif ASYNCIFY == 2
+    //
+    // JSPI implementation of Asyncify.
+    //
+    handleSleep: function(startAsync) {
+      {{{ runtimeKeepalivePush(); }}}
+      var promise = new Promise((resolve) => {
+        startAsync(resolve);
+      });
+      promise.finally(() => {
+        {{{ runtimeKeepalivePop(); }}}
+      });
+      return promise;
+    },
+    handleAsync: function(startAsync) {
+      return Asyncify.handleSleep((wakeUp) => {
+        // TODO: add error handling as a second param when handleSleep implements it.
+        startAsync().then(wakeUp);
+      });
+    },
+#endif
   },
 
   emscripten_sleep__sig: 'vi',
@@ -456,7 +463,7 @@ mergeInto(LibraryManager.library, {
     return Asyncify.handleSleep((wakeUp) => {
       var _url = UTF8ToString(url);
       var _file = UTF8ToString(file);
-      _file = PATH_FS.resolve(FS.cwd(), _file);
+      _file = PATH_FS.resolve(_file);
       var destinationDirectory = PATH.dirname(_file);
       FS.createPreloadedFile(
         destinationDirectory,
@@ -466,8 +473,14 @@ mergeInto(LibraryManager.library, {
         wakeUp,
         false, // dontCreateFile
         false, // canOwn
-        // preFinish: if the destination directory does not yet exist, create it
-        () => FS.mkdirTree(destinationDirectory)
+        function() { // preFinish
+          // if a file exists there, we overwrite it
+          try {
+            FS.unlink(_file);
+          } catch (e) {}
+          // if the destination directory does not yet exist, create it
+          FS.mkdirTree(destinationDirectory);
+        }
       );
     });
   },
@@ -520,6 +533,18 @@ mergeInto(LibraryManager.library, {
     });
   },
 
+  _load_secondary_module__sig: 'v',
+  _load_secondary_module: async function() {
+    // Mark the module as loading for the wasm module (so it doesn't try to load it again).
+    Module['asm']['load_secondary_module_status'].value = 1;
+    var imports = {'primary': Module['asm']};
+    // Replace '.wasm' suffix with '.deferred.wasm'.
+    var deferred = wasmBinaryFile.slice(0, -5) + '.deferred.wasm';
+    await new Promise((resolve) => {
+      instantiateAsync(null, deferred, imports, resolve);
+    });
+  },
+
   $Fibers__deps: ['$Asyncify'],
   $Fibers: {
     nextFiber: 0,
@@ -531,7 +556,7 @@ mergeInto(LibraryManager.library, {
           var fiber = Fibers.nextFiber;
           Fibers.nextFiber = 0;
 #if ASYNCIFY_DEBUG >= 2
-          err("ASYNCIFY/FIBER: trampoline jump into fiber", fiber, new Error().stack);
+          dbg("ASYNCIFY/FIBER: trampoline jump into fiber", fiber, new Error().stack);
 #endif
           Fibers.finishContextSwitch(fiber);
         } while (Fibers.nextFiber);
@@ -559,7 +584,7 @@ mergeInto(LibraryManager.library, {
         writeStackCookie();
 #endif
 #if ASYNCIFY_DEBUG
-        err('ASYNCIFY/FIBER: entering fiber', newFiber, 'for the first time');
+        dbg('ASYNCIFY/FIBER: entering fiber', newFiber, 'for the first time');
 #endif
         Asyncify.currData = null;
         {{{ makeSetValue('newFiber', C_STRUCTS.emscripten_fiber_s.entry, 0, 'i32') }}};
@@ -571,7 +596,7 @@ mergeInto(LibraryManager.library, {
         Asyncify.currData = asyncifyData;
 
 #if ASYNCIFY_DEBUG
-        err('ASYNCIFY/FIBER: start rewind', asyncifyData, '(resuming fiber', newFiber, ')');
+        dbg('ASYNCIFY/FIBER: start rewind', asyncifyData, '(resuming fiber', newFiber, ')');
 #endif
         Asyncify.state = Asyncify.State.Rewinding;
         _asyncify_start_rewind(asyncifyData);
@@ -580,38 +605,12 @@ mergeInto(LibraryManager.library, {
     },
   },
 
-  emscripten_fiber_init__sig: 'viiiiiii',
-  emscripten_fiber_init__deps: ['$Asyncify'],
-  emscripten_fiber_init: function(fiber, entryPoint, userData, cStack, cStackSize, asyncStack, asyncStackSize) {
-    var cStackBase = cStack + cStackSize;
-
-    {{{ makeSetValue('fiber', C_STRUCTS.emscripten_fiber_s.stack_base,  'cStackBase',  'i32') }}};
-    {{{ makeSetValue('fiber', C_STRUCTS.emscripten_fiber_s.stack_limit, 'cStack',      'i32') }}};
-    {{{ makeSetValue('fiber', C_STRUCTS.emscripten_fiber_s.stack_ptr,   'cStackBase',  'i32') }}};
-    {{{ makeSetValue('fiber', C_STRUCTS.emscripten_fiber_s.entry,       'entryPoint', 'i32') }}};
-    {{{ makeSetValue('fiber', C_STRUCTS.emscripten_fiber_s.user_data,   'userData',   'i32') }}};
-
-    var asyncifyData = fiber + {{{ C_STRUCTS.emscripten_fiber_s.asyncify_data }}};
-    Asyncify.setDataHeader(asyncifyData, asyncStack, asyncStackSize);
-  },
-
-  emscripten_fiber_init_from_current_context__sig: 'vii',
-  emscripten_fiber_init_from_current_context__deps: ['$Asyncify'],
-  emscripten_fiber_init_from_current_context: function(fiber, asyncStack, asyncStackSize) {
-    {{{ makeSetValue('fiber', C_STRUCTS.emscripten_fiber_s.stack_base,  '_emscripten_stack_get_base()', 'i32') }}};
-    {{{ makeSetValue('fiber', C_STRUCTS.emscripten_fiber_s.stack_limit, '_emscripten_stack_get_end()',  'i32') }}};
-    {{{ makeSetValue('fiber', C_STRUCTS.emscripten_fiber_s.entry,       0,            'i32') }}};
-
-    var asyncifyData = fiber + {{{ C_STRUCTS.emscripten_fiber_s.asyncify_data }}};
-    Asyncify.setDataHeader(asyncifyData, asyncStack, asyncStackSize);
-  },
-
   emscripten_fiber_swap__sig: 'vii',
   emscripten_fiber_swap__deps: ["$Asyncify", "$Fibers"],
   emscripten_fiber_swap: function(oldFiber, newFiber) {
     if (ABORT) return;
 #if ASYNCIFY_DEBUG
-    err('ASYNCIFY/FIBER: swap', oldFiber, '->', newFiber, 'state:', Asyncify.state);
+    dbg('ASYNCIFY/FIBER: swap', oldFiber, '->', newFiber, 'state:', Asyncify.state);
 #endif
     if (Asyncify.state === Asyncify.State.Normal) {
       Asyncify.state = Asyncify.State.Unwinding;
@@ -621,7 +620,7 @@ mergeInto(LibraryManager.library, {
       Asyncify.currData = asyncifyData;
 
 #if ASYNCIFY_DEBUG
-      err('ASYNCIFY/FIBER: start unwind', asyncifyData);
+      dbg('ASYNCIFY/FIBER: start unwind', asyncifyData);
 #endif
       _asyncify_start_unwind(asyncifyData);
 
@@ -634,7 +633,7 @@ mergeInto(LibraryManager.library, {
       assert(Asyncify.state === Asyncify.State.Rewinding);
 #endif
 #if ASYNCIFY_DEBUG
-      err('ASYNCIFY/FIBER: stop rewind');
+      dbg('ASYNCIFY/FIBER: stop rewind');
 #endif
       Asyncify.state = Asyncify.State.Normal;
       _asyncify_stop_rewind();

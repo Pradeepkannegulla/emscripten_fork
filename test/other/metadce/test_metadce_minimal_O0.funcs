@@ -8,10 +8,13 @@ $__unlockfile
 $__wasm_call_ctors
 $add
 $emscripten_stack_get_base
+$emscripten_stack_get_current
 $emscripten_stack_get_end
 $emscripten_stack_get_free
 $emscripten_stack_init
 $fflush
+$getTempRet0
+$setTempRet0
 $stackAlloc
 $stackRestore
 $stackSave

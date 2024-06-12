@@ -99,7 +99,7 @@ This list is not exhaustive, but illustrates most commonly used combinations.
 
 .. note::
    Regardless of the name of the output file ``emcc`` will always perform
-   linking and produce a final exectuable, unless a specific flags (e.g. ``-c``)
+   linking and produce a final executable, unless a specific flags (e.g. ``-c``)
    direct it do something else.  This differs to previous behaviour where
    ``emcc`` would default to combining object files (essentially assuming
    ``-r``) unless given a specific executable extension (e.g. ``.js`` or
@@ -365,6 +365,15 @@ around the internal calls to clang.  Like other config settings this can also be
 set via an environment variable.  e.g::
 
   EM_COMPILER_WRAPPER=gomacc emcc -c hello.c
+
+
+pkg-config
+==========
+
+*emconfigure* and *emmake* configure `pkg-config <https://www.freedesktop.org/wiki/Software/pkg-config/>`_
+for cross compiling and set the environment variable ``PKG_CONFIG_LIBDIR`` and
+``PKG_CONFIG_PATH``. To provide custom pkg-config paths, set the environment
+variable ``EM_PKG_CONFIG_PATH``.
 
 
 Examples / test code
